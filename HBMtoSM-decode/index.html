@@ -59,6 +59,19 @@
         <small>Bandwidth-bound</small>
       </section>
 
+      <section class="reduction-control" aria-label="Accumulation strategy">
+        <p class="eyebrow">After the SMs finish</p>
+        <div role="group" aria-label="Choose accumulation strategy">
+          <button id="reduce-sequential" type="button" aria-pressed="true">
+            Sequential <span>O(N)</span>
+          </button>
+          <button id="reduce-tree" type="button" aria-pressed="false">
+            Tree <span>O(log N)</span>
+          </button>
+        </div>
+        <p id="reduction-status">7 dependent additions</p>
+      </section>
+
       <aside id="inspect" hidden>
         <p class="eyebrow">Inspection window</p>
         <h3 id="inspect-title">SM</h3>
@@ -72,7 +85,7 @@
         <button id="play" type="button" aria-label="Play">Play</button>
         <div class="scrub-wrap">
           <div id="marks" class="marks"></div>
-          <input id="scrub" type="range" min="0" max="22" step="0.01" value="0" aria-label="Timeline" />
+          <input id="scrub" type="range" min="0" max="30" step="0.01" value="0" aria-label="Timeline" />
         </div>
         <span id="clock">0:00.0</span>
         <button id="follow" type="button" hidden>Follow</button>

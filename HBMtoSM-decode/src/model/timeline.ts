@@ -13,7 +13,9 @@ import {
   type SMState,
 } from "./gemm";
 
-export const DURATION = 24;
+export type ReductionMode = "sequential" | "tree";
+
+export const DURATION = 30;
 
 const TOUR_START = 8;
 const TOUR_STEP = 0.9;
@@ -22,7 +24,10 @@ const FILL_START = TOUR_END + 0.2;
 const FILL_STAGGER = 0.055;
 const COMPUTE_START = FILL_START + 0.52;
 const MATMUL_DURATION = 1.35;
-const WRITE_START = 18.2;
+export const REDUCE_START = 18;
+export const REDUCE_DURATION = 6.3;
+export const REDUCE_END = REDUCE_START + REDUCE_DURATION;
+const WRITE_START = 24.7;
 
 export interface Phase {
   t: number;
@@ -69,14 +74,21 @@ export const PHASES: Phase[] = [
     body: "The eight dot-product groups finish quickly. Weight bytes were streamed once, but each weight contributes to only one multiply-add for this token.",
   },
   {
+    t: REDUCE_START,
+    id: "reduce",
+    short: "Accumulate",
+    title: "Combine the eight partials",
+    body: "Choose a sequential dependency chain or a three-round parallel tree. Everything before and after this reduction is identical.",
+  },
+  {
     t: WRITE_START,
     id: "writeback",
     short: "Output",
-    title: "Eight tiny results become one row",
-    body: "Eight 1×32 segments assemble into y, a 1×256 row of only 1 KB, and return to HBM.",
+    title: "The accumulated result becomes one row",
+    body: "After the reduction, the combined result forms y, a 1×256 row of only 1 KB, and returns to HBM.",
   },
   {
-    t: 21.7,
+    t: 28.2,
     id: "bound",
     short: "Memory-bound",
     title: "Low arithmetic intensity",
@@ -131,6 +143,14 @@ export interface TimelineSample {
   focus: { row: number; col: number; amount: number; tour: number };
   assemble: number;
   tileOpacity: number;
+  reduction: {
+    mode: ReductionMode;
+    active: number;
+    complete: number;
+    step: number;
+    stepProgress: number;
+    status: string;
+  };
   blocks: BlockVisual[];
   callouts: { workingSet: number; stored: number };
   meters: {
@@ -279,7 +299,28 @@ function blockVisual(t: number, row: number, col: number, tour: TourHit | null):
   return { row, col, state, progress, load, dim, hot: isCurrent ? 1 : 0 };
 }
 
-export function sampleTimeline(time: number): TimelineSample {
+function reductionAt(t: number, mode: ReductionMode): TimelineSample["reduction"] {
+  const progress = clamp01((t - REDUCE_START) / REDUCE_DURATION);
+  const steps = mode === "sequential" ? 7 : 3;
+  const scaled = Math.min(steps - Number.EPSILON, progress * steps);
+  const step = Math.min(steps - 1, Math.floor(scaled));
+  const stepProgress = smooth(scaled - step);
+  const active = ramp(t, REDUCE_START - 0.18, REDUCE_START + 0.12) * (1 - ramp(t, REDUCE_END, REDUCE_END + 0.22));
+  const complete = ramp(t, REDUCE_END - 0.08, REDUCE_END + 0.18);
+
+  let status: string;
+  if (mode === "sequential") {
+    status = progress >= 1
+      ? "7 dependent additions · O(N) complete"
+      : `Step ${step + 1}/7 · ${"12345678".slice(0, step + 1)} + ${step + 2}`;
+  } else {
+    const rounds = ["1+2 · 3+4 · 5+6 · 7+8", "12+34 · 56+78", "1234+5678"];
+    status = progress >= 1 ? "3 parallel rounds · O(log N) complete" : `Round ${step + 1}/3 · ${rounds[step]}`;
+  }
+  return { mode, active, complete, step, stepProgress, status };
+}
+
+export function sampleTimeline(time: number, reductionMode: ReductionMode = "sequential"): TimelineSample {
   const t = Math.min(DURATION, Math.max(0, time));
   const model = getModel();
   const tour = tourAt(t);
@@ -299,6 +340,13 @@ export function sampleTimeline(time: number): TimelineSample {
   const returning = ramp(t, WRITE_START + 1.2, WRITE_START + 1.55) * (1 - ramp(t, WRITE_START + 2.9, WRITE_START + 3.3));
   const phase = { ...phaseAt(t) };
   if (tour) Object.assign(phase, tourCopy(tour.index));
+  const reduction = reductionAt(t, reductionMode);
+  if (phase.id === "reduce") {
+    phase.title = reductionMode === "sequential" ? "Sequential accumulation · O(N)" : "Tree accumulation · O(log N)";
+    phase.body = reductionMode === "sequential"
+      ? "One running value moves from N to N+1, then to N+2, continuing through all eight partials. Seven additions sit on one dependency chain."
+      : "Independent pairs add together at the same time, then the four groups become two, then one. Eight partials collapse in three synchronized rounds.";
+  }
 
   let cText = "waiting";
   let cBar = 0;
@@ -308,8 +356,14 @@ export function sampleTimeline(time: number): TimelineSample {
   } else if (t >= FILL_START && avg < 0.98) {
     cText = "8 × 1×32";
     cBar = 0.45 + avg * 0.55;
-  } else if (avg >= 0.98 && t < WRITE_START + 1.1) {
-    cText = "8 segments → one row";
+  } else if (avg >= 0.98 && t < REDUCE_START) {
+    cText = "8 partials · ready to accumulate";
+    cBar = 0.7;
+  } else if (t >= REDUCE_START && t < REDUCE_END + 0.2) {
+    cText = reduction.status;
+    cBar = 0.7 + clamp01((t - REDUCE_START) / REDUCE_DURATION) * 0.25;
+  } else if (t >= REDUCE_END && t < WRITE_START + 1.1) {
+    cText = "1 accumulated result";
     cBar = 1;
   } else if (t >= WRITE_START + 1.1 && t < WRITE_START + 3.05) {
     cText = "1×256 · SMs → HBM";
@@ -351,6 +405,7 @@ export function sampleTimeline(time: number): TimelineSample {
     focus: tour ? { row: tour.row, col: tour.col, amount: tour.amount, tour: tour.tour } : { row: -1, col: -1, amount: 0, tour: 0 },
     assemble: ramp(t, WRITE_START, WRITE_START + 0.85),
     tileOpacity: ramp(t, FILL_START, FILL_START + 0.4),
+    reduction,
     blocks,
     callouts: {
       workingSet: ramp(t, 6.2, 6.65) * (1 - ramp(t, 7.7, 8.1)),

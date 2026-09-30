@@ -20,7 +20,6 @@ import {
   SM_TOUR,
   TILE_SIZE,
   VECTOR_DEPTH,
-  cTileSlot,
   colBand,
   hbmFootprint,
   hbmMatrixCenter,
@@ -31,6 +30,7 @@ import {
   type Vec3,
 } from "../layout";
 import {
+  MODEL,
   arithmeticIntensity,
   cacheUsed,
   dataBytes,
@@ -70,6 +70,13 @@ interface SquarePlate {
   object: THREE.Group;
   material: THREE.ShaderMaterial;
   plate: THREE.MeshStandardMaterial;
+}
+
+interface ReductionTokenVisual {
+  position: Vec3;
+  opacity: number;
+  scale: number;
+  label: string;
 }
 
 function v3(p: Vec3): THREE.Vector3 {
@@ -493,6 +500,104 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
   labels.l2.center.set(0.5, 0);
   overlays.add(...Object.values(labels));
 
+  const reductionLabels = Array.from({ length: GRID }, (_, col) => {
+    const at = smWorld(MODEL.activeRow, col);
+    const label = tag(`<b>${col + 1}</b>`, [at[0], at[1] + 1.02, at[2]], "c reduction-token");
+    label.center.set(0.5, 0.5);
+    overlays.add(label);
+    return label;
+  });
+
+  function tokenAnchor(col: number): Vec3 {
+    const at = home[MODEL.activeRow * GRID + col];
+    return [at[0], at[1] + 0.66, at[2]];
+  }
+
+  function moveToken(from: number, to: number, u: number): Vec3 {
+    const a = tokenAnchor(from);
+    const b = tokenAnchor(to);
+    return [
+      a[0] + (b[0] - a[0]) * u,
+      a[1] + (b[1] - a[1]) * u + Math.sin(Math.PI * u) * 0.48,
+      a[2] + (b[2] - a[2]) * u,
+    ];
+  }
+
+  function reductionToken(sample: TimelineSample, col: number): ReductionTokenVisual {
+    const { mode, step, stepProgress } = sample.reduction;
+    const at = tokenAnchor(col);
+    const finalState = sample.phase.id !== "reduce" && sample.reduction.complete > 0.5;
+    if (finalState) {
+      if (col !== GRID - 1) return { position: at, opacity: 0, scale: 1, label: "" };
+      const target = C_FORM;
+      const u = sample.assemble;
+      return {
+        position: [
+          at[0] + (target[0] - at[0]) * u,
+          at[1] + (target[1] - at[1]) * u + Math.sin(Math.PI * u) * 0.72,
+          at[2] + (target[2] - at[2]) * u,
+        ],
+        opacity: 1 - sample.cMover,
+        scale: 1 + (GRID - 1) * u,
+        label: "12345678",
+      };
+    }
+
+    if (mode === "sequential") {
+      if (col < step) return { position: at, opacity: 0, scale: 1, label: "" };
+      if (col === step) {
+        return {
+          position: moveToken(step, step + 1, stepProgress),
+          opacity: 1 - smooth01((stepProgress - 0.72) / 0.28),
+          scale: 1,
+          label: "12345678".slice(0, step + 1),
+        };
+      }
+      if (col === step + 1) {
+        return {
+          position: at,
+          opacity: 1,
+          scale: 1 + Math.sin(Math.PI * stepProgress) * 0.2,
+          label: stepProgress > 0.52 ? "12345678".slice(0, step + 2) : String(col + 1),
+        };
+      }
+      return { position: at, opacity: 1, scale: 1, label: String(col + 1) };
+    }
+
+    const survivors = [[0, 1, 2, 3, 4, 5, 6, 7], [1, 3, 5, 7], [3, 7]];
+    const sources = [[0, 2, 4, 6], [1, 5], [3]];
+    const targets = [[1, 3, 5, 7], [3, 7], [7]];
+    const labelsBefore = [
+      ["1", "2", "3", "4", "5", "6", "7", "8"],
+      ["", "12", "", "34", "", "56", "", "78"],
+      ["", "", "", "1234", "", "", "", "5678"],
+    ];
+    const labelsAfter = [
+      ["", "12", "", "34", "", "56", "", "78"],
+      ["", "", "", "1234", "", "", "", "5678"],
+      ["", "", "", "", "", "", "", "12345678"],
+    ];
+    if (!survivors[step].includes(col)) return { position: at, opacity: 0, scale: 1, label: "" };
+    const sourceIndex = sources[step].indexOf(col);
+    if (sourceIndex >= 0) {
+      return {
+        position: moveToken(col, targets[step][sourceIndex], stepProgress),
+        opacity: 1 - smooth01((stepProgress - 0.72) / 0.28),
+        scale: 1,
+        label: labelsBefore[step][col],
+      };
+    }
+    if (targets[step].includes(col)) {
+      return {
+        position: at,
+        opacity: 1,
+        scale: 1 + Math.sin(Math.PI * stepProgress) * 0.2,
+        label: stepProgress > 0.52 ? labelsAfter[step][col] : labelsBefore[step][col],
+      };
+    }
+    return { position: at, opacity: 1, scale: 1, label: labelsBefore[step][col] };
+  }
+
   if (debug) {
     const markers: [number, number, number][] = [
       [0, 0, 0x4c8dff],
@@ -620,18 +725,24 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
       windowMesh.setMatrixAt(i, dummy.matrix);
 
       const onSm: Vec3 = [origin[0], origin[1] + 0.66, origin[2]];
-      const slot = cTileSlot(row, col, atC);
-      const gather = sample.assemble;
-      const arc = Math.sin(Math.PI * gather) * 0.9;
-      dummy.position.set(
-        onSm[0] + (slot[0] - onSm[0]) * gather,
-        onSm[1] + (slot[1] - onSm[1]) * gather + arc,
-        onSm[2] + (slot[2] - onSm[2]) * gather,
-      );
+      let token: ReductionTokenVisual = { position: onSm, opacity: 1, scale: 1, label: "" };
+      if (row === MODEL.activeRow && (sample.phase.id === "reduce" || sample.reduction.complete > 0.5)) {
+        token = reductionToken(sample, col);
+      }
+      tileOpacity[i] *= token.opacity;
+      dummy.position.set(token.position[0], token.position[1], token.position[2]);
       dummy.rotation.set(-Math.PI / 2, 0, 0);
-      dummy.scale.set(1, 1, 1);
+      dummy.scale.set(token.scale, 1, 1);
       dummy.updateMatrix();
       tileMesh.setMatrixAt(i, dummy.matrix);
+
+      if (row === MODEL.activeRow) {
+        const tokenLabel = reductionLabels[col];
+        tokenLabel.position.set(token.position[0], token.position[1] + 0.34, token.position[2]);
+        tokenLabel.element.innerHTML = `<b>${token.label}</b>`;
+        const labelOpacity = sample.reduction.active * token.opacity * (token.label ? 1 : 0);
+        tokenLabel.element.style.opacity = labelOpacity.toFixed(3);
+      }
     }
 
     windows.progress.needsUpdate = true;

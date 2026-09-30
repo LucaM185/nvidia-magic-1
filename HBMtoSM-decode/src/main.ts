@@ -13,7 +13,15 @@ import {
   outputTileBytes,
   weightPanelBytes,
 } from "./model/gemm";
-import { DURATION, PHASES, sampleTimeline, workloadCaption, type TimelineSample } from "./model/timeline";
+import {
+  DURATION,
+  PHASES,
+  REDUCE_START,
+  sampleTimeline,
+  workloadCaption,
+  type ReductionMode,
+  type TimelineSample,
+} from "./model/timeline";
 import { createWorld, type PickHit } from "./scene/world";
 import "./style.css";
 
@@ -82,12 +90,16 @@ const inspectFacts = must<HTMLElement>("#inspect-facts");
 const inspectNote = must<HTMLElement>("#inspect-note");
 const inspectBack = must<HTMLButtonElement>("#inspect-back");
 const marks = must<HTMLElement>("#marks");
+const sequentialButton = must<HTMLButtonElement>("#reduce-sequential");
+const treeButton = must<HTMLButtonElement>("#reduce-tree");
+const reductionStatus = must<HTMLElement>("#reduction-status");
 
 eyebrow.textContent = workloadCaption();
 scrub.max = String(DURATION);
 
 let t = Number.isFinite(initialT) ? Math.min(DURATION, Math.max(0, initialT)) : 0;
 let playing = !reduceMotion && !params.has("t");
+let reductionMode: ReductionMode = params.get("reduction") === "tree" ? "tree" : "sequential";
 let mode: "timeline" | "free" | "inspect" = "timeline";
 let inspectTarget: PickHit | null = null;
 let snapInspect = false;
@@ -119,6 +131,27 @@ for (const phase of PHASES) {
   });
   marks.appendChild(button);
 }
+
+function chooseReduction(next: ReductionMode): void {
+  if (next === reductionMode) return;
+  reductionMode = next;
+  sequentialButton.setAttribute("aria-pressed", String(next === "sequential"));
+  treeButton.setAttribute("aria-pressed", String(next === "tree"));
+  const url = new URL(location.href);
+  url.searchParams.set("reduction", next);
+  history.replaceState(null, "", url);
+  if (t >= REDUCE_START) {
+    t = REDUCE_START;
+    mode = "timeline";
+    inspectTarget = null;
+    playing = !reduceMotion;
+  }
+}
+
+sequentialButton.addEventListener("click", () => chooseReduction("sequential"));
+treeButton.addEventListener("click", () => chooseReduction("tree"));
+sequentialButton.setAttribute("aria-pressed", String(reductionMode === "sequential"));
+treeButton.setAttribute("aria-pressed", String(reductionMode === "tree"));
 
 playButton.addEventListener("click", () => {
   if (t >= DURATION) t = 0;
@@ -250,7 +283,7 @@ function frame(now: number): void {
     if (t >= DURATION) playing = false;
   }
 
-  const sample = sampleTimeline(t);
+  const sample = sampleTimeline(t, reductionMode);
   world.update(sample, inspectTarget);
   applyCamera(sample, dt);
   renderHud(sample);
@@ -283,6 +316,11 @@ function renderHud(sample: TimelineSample): void {
   phaseKicker.textContent = sample.phase.short;
   phaseTitle.textContent = sample.phase.title;
   phaseBody.textContent = sample.phase.body;
+  reductionStatus.textContent = sample.phase.id === "reduce"
+    ? sample.reduction.status
+    : reductionMode === "sequential"
+      ? "7 dependent additions · N → N+1 → …"
+      : "3 parallel rounds · 8 → 4 → 2 → 1";
   playButton.textContent = t >= DURATION && !playing ? "Replay" : playing ? "Pause" : "Play";
   followButton.hidden = mode === "timeline";
   setText("#a-status", sample.meters.a);
