@@ -12,5 +12,5 @@
     "isolatedModules": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
-  "include": ["src"]
+  "include": ["HBMtoSM/src", "HBMtoSM-decode/src", "SMtoResults/src", "vite.config.ts"]
 }

@@ -42,7 +42,7 @@ html, body {
   pointer-events: none;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  justify-content: flex-start;
   padding: 22px 26px 18px;
 }
 
@@ -226,6 +226,8 @@ html, body {
   display: flex;
   align-items: center;
   gap: 12px;
+  margin-top: auto;
+  width: 100%;
 }
 
 .scrub-wrap { flex: 1; min-width: 0; }
@@ -340,6 +342,25 @@ html, body {
   padding: 8px;
   font: 11px/1.4 ui-monospace, monospace;
 }
+
+.scene-switch {
+  position: fixed;
+  z-index: 8;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(8, 9, 13, 0.72);
+  color: var(--ink);
+  text-decoration: none;
+  font: 11px "IBM Plex Mono", ui-monospace, monospace;
+  backdrop-filter: blur(12px);
+}
+
+.scene-switch:hover { background: rgba(255, 255, 255, 0.09); }
+.decode-switch { top: 58px; }
 
 @media (max-width: 900px) {
   .top { flex-direction: column; gap: 12px; }

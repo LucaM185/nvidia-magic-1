@@ -19,6 +19,7 @@ import {
   SM_BODY,
   SM_TOUR,
   TILE_SIZE,
+  VECTOR_DEPTH,
   cTileSlot,
   colBand,
   hbmFootprint,
@@ -30,14 +31,17 @@ import {
   type Vec3,
 } from "../layout";
 import {
-  aPanelBytes,
-  bPanelBytes,
-  cTileBytes,
+  arithmeticIntensity,
   cacheUsed,
-  kb,
-  matrixBytes,
-  residentBytes,
+  dataBytes,
+  flopCount,
+  formatBytes,
   getModel,
+  outputBytes,
+  outputTileBytes,
+  residentBytes,
+  weightBytes,
+  weightPanelBytes,
 } from "../model/gemm";
 import type { TimelineSample } from "../model/timeline";
 import { STATE_COLOR } from "../theme";
@@ -86,6 +90,11 @@ function tag(html: string, position: Vec3, className = ""): CSS2DObject {
   return object;
 }
 
+function l2TagHtml(compact: boolean): string {
+  if (compact) return `<b>L2</b>`;
+  return `<b>L2</b><span class="kicker">40 MB</span><span>x+W ${cacheUsed(residentBytes())}</span>`;
+}
+
 function metal(color: number, roughness = 0.58): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
     color,
@@ -121,8 +130,8 @@ function aToSm(row: number, col: number): THREE.Vector3[] {
   const u = (col + 0.5) / GRID;
   const sm = smWorld(row, col);
   const vEdge = sm[2] < L2_A.center[2] ? 1.05 : -0.05;
-  const onBand = planePoint(L2_A.center, MATRIX, MATRIX, u, (v0 + v1) / 2);
-  const onEdge = planePoint(L2_A.center, MATRIX, MATRIX, u, vEdge);
+  const onBand = planePoint(L2_A.center, L2_A.width, L2_A.depth, u, (v0 + v1) / 2);
+  const onEdge = planePoint(L2_A.center, L2_A.width, L2_A.depth, u, vEdge);
   return [
     v3([onBand[0], onBand[1] + 0.1, onBand[2]]),
     v3([onEdge[0], onEdge[1] + 0.18, onEdge[2]]),
@@ -282,7 +291,15 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
   const bColor = new THREE.Color("#f2a24a");
   const cColor = new THREE.Color("#3ddc97");
 
-  function createSquare(hex: string): SquarePlate {
+  function createPlate(
+    hex: string,
+    width = MATRIX,
+    depth = width,
+    cellsX = 32,
+    cellsY = cellsX,
+    panelsX = 8,
+    panelsY = panelsX,
+  ): SquarePlate {
     const object = new THREE.Group();
     const tint = new THREE.Color(hex);
     const plate = new THREE.MeshStandardMaterial({
@@ -295,10 +312,13 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
       opacity: 1,
       depthWrite: false,
     });
-    const slab = new THREE.Mesh(new THREE.BoxGeometry(MATRIX, 0.08, MATRIX), plate);
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(width, 0.08, depth), plate);
     slab.position.y = -0.05;
     slab.renderOrder = 3;
-    const face = new THREE.Mesh(new THREE.PlaneGeometry(MATRIX * 0.96, MATRIX * 0.96), createMatrixMaterial(hex));
+    const face = new THREE.Mesh(
+      new THREE.PlaneGeometry(width * 0.96, depth * 0.96),
+      createMatrixMaterial(hex, cellsX, cellsY, panelsX, panelsY),
+    );
     face.rotation.x = -Math.PI / 2;
     face.position.y = 0.002;
     face.renderOrder = 4;
@@ -309,11 +329,11 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
   const fromA = hbmMatrixCenter(hbmModule("A"));
   const fromB = hbmMatrixCenter(hbmModule("B"));
   const fromC = hbmMatrixCenter(hbmModule("C"));
-  const ghostA = createSquare("#4c8dff");
-  const ghostB = createSquare("#f2a24a");
-  const moverA = createSquare("#4c8dff");
-  const moverB = createSquare("#f2a24a");
-  const moverC = createSquare("#3ddc97");
+  const ghostA = createPlate("#4c8dff", MATRIX, VECTOR_DEPTH, 32, 1, 8, 1);
+  const ghostB = createPlate("#f2a24a");
+  const moverA = createPlate("#4c8dff", MATRIX, VECTOR_DEPTH, 32, 1, 8, 1);
+  const moverB = createPlate("#f2a24a");
+  const moverC = createPlate("#3ddc97", MATRIX, VECTOR_DEPTH, 32, 1, 8, 1);
   ghostA.object.position.set(fromA[0], fromA[1], fromA[2]);
   ghostB.object.position.set(fromB[0], fromB[1], fromB[2]);
   hbmGroup.add(ghostA.object, ghostB.object);
@@ -350,7 +370,7 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
   interconnect.name = "interconnect";
   gpuPackage.add(interconnect);
 
-  const flightA = createRibbon(flyPoints(fromA, L2_A.center, 2.9, -1.35), aColor, 0.28);
+  const flightA = createRibbon(flyPoints(fromA, L2_A.center, 2.9, -1.35), aColor, 0.12);
   const flightB = createRibbon(flyPoints(fromB, L2_B.center, 2.9, 1.35), bColor, 0.28);
   const flightC = createRibbon(flyPoints(C_FORM, fromC, 1.6, 0.35), cColor, 0.28);
   interconnect.add(flightA.mesh, flightB.mesh, flightC.mesh);
@@ -396,7 +416,7 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
   windowMesh.frustumCulled = false;
 
   const tiles = createTileMaterial(count);
-  const tileGeo = new THREE.PlaneGeometry(TILE_SIZE, TILE_SIZE);
+  const tileGeo = new THREE.PlaneGeometry(TILE_SIZE, VECTOR_DEPTH);
   tileGeo.setAttribute("aFill", tiles.fill);
   tileGeo.setAttribute("aOpacity", tiles.opacity);
   tileGeo.setAttribute("aDim", tiles.dim);
@@ -407,7 +427,7 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
 
   const sliceAMat = createSliceMaterial("#4c8dff", GRID, 1);
   const sliceBMat = createSliceMaterial("#f2a24a", 1, GRID);
-  const sliceA = new THREE.Mesh(new THREE.PlaneGeometry(MATRIX, TILE_SIZE), sliceAMat);
+  const sliceA = new THREE.Mesh(new THREE.PlaneGeometry(MATRIX, VECTOR_DEPTH), sliceAMat);
   const sliceB = new THREE.Mesh(new THREE.PlaneGeometry(TILE_SIZE, MATRIX), sliceBMat);
   placeHorizontal(sliceA, [0, 0, 0]);
   placeHorizontal(sliceB, [0, 0, 0]);
@@ -417,8 +437,8 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
   sliceB.visible = false;
   smArray.add(sliceA, sliceB);
 
-  const footprintMat = createFootprintMaterial("#3ddc97");
-  const footprint = new THREE.Mesh(new THREE.PlaneGeometry(MATRIX, MATRIX), footprintMat);
+  const footprintMat = createFootprintMaterial("#3ddc97", 8, 1);
+  const footprint = new THREE.Mesh(new THREE.PlaneGeometry(MATRIX, VECTOR_DEPTH), footprintMat);
   placeHorizontal(footprint, C_FORM);
   footprint.renderOrder = 5;
   overlays.add(footprint);
@@ -447,34 +467,28 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
   if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
 
   const model = getModel();
-  const bytes = kb(matrixBytes());
-  const shape = `${model.n}×${model.n}`;
   const labels = {
     hbm: tag(`<b>HBM</b><span class="kicker">6 low stacks</span>`, [hbmModule("A").x - 1.65, 1.75, 0], "hw"),
     hbmRight: tag(`<b>HBM</b><span class="kicker">beside die</span>`, [hbmModule("B").x + 1.65, 1.75, 0], "hw"),
-    a: tag(`<b>A · ${shape}</b><span>${bytes} · FP32</span>`, [fromA[0], fromA[1] + 0.7, fromA[2]], "a"),
-    b: tag(`<b>B · ${shape}</b><span>${bytes} · FP32</span>`, [fromB[0], fromB[1] + 0.7, fromB[2]], "b"),
-    l2: tag(
-      `<b>L2</b><span class="kicker">40 MB</span><span>A+B ${cacheUsed(residentBytes())}</span>`,
-      [0, 1.05, L2_SLAB.depth / 2 + 0.55],
-      "hw",
-    ),
+    a: tag(`<b>x · 1×${model.k}</b><span>${formatBytes(dataBytes())} · FP32</span>`, [fromA[0], fromA[1] + 0.7, fromA[2]], "a"),
+    b: tag(`<b>W · ${model.k}×${model.n}</b><span>${formatBytes(weightBytes())} · FP32</span>`, [fromB[0], fromB[1] + 0.7, fromB[2]], "b"),
+    l2: tag(l2TagHtml(false), [0, 1.05, L2_SLAB.depth / 2 + 0.55], "hw"),
     gpu: tag(`<b>GPU package</b>`, [-(DIE_FRAME.width / 2) - 1.15, 0.9, DIE_FRAME.depth / 2 - 0.55], "hw"),
     smTop: tag(`<b>SMs</b>`, [0, 1.2, -(BANK_CENTER_Z + SM_BANK_DEPTH * 0.28)], "hw"),
     smBottom: tag(`<b>SMs</b>`, [0, 1.2, BANK_CENTER_Z + SM_BANK_DEPTH * 0.28], "hw"),
     working: tag(
-      `<b>A + B in L2</b><span>${shape} · ${bytes} each</span><span>${cacheUsed(residentBytes())}</span>`,
+      `<b>257 KB read</b><span>W is 256× larger than x</span><span>${flopCount().toLocaleString("en-US")} FLOPs · ${arithmeticIntensity().toFixed(2)} FLOP/B</span>`,
       [-(SM_BANK_WIDTH / 2) - 0.95, 1.75, 0.18],
     ),
-    panelA: tag(`<b>A panel</b><span>into this SM</span>`, [0, 2, 0], "a"),
-    panelB: tag(`<b>B panel</b><span>into this SM</span>`, [0, 2, 0], "b"),
-    tileC: tag(`<b>C · 32×32</b><span>${kb(cTileBytes())}</span>`, [0, 2, 0], "c"),
+    panelA: tag(`<b>x row</b><span>reused by every active SM</span>`, [0, 2, 0], "a"),
+    panelB: tag(`<b>W panel</b><span>32 KB into this SM</span>`, [0, 2, 0], "b"),
+    tileC: tag(`<b>y · 1×32</b><span>${formatBytes(outputTileBytes())}</span>`, [0, 2, 0], "c"),
     formed: tag(
-      `<b>C · ${shape}</b><span>8×8 tiles · one matrix</span><span>${bytes}</span>`,
+      `<b>y · 1×${model.n}</b><span>8 segments · one row</span><span>${formatBytes(outputBytes())}</span>`,
       [C_FORM[0], C_FORM[1] + 0.85, C_FORM[2]],
       "c",
     ),
-    stored: tag(`<b>C · ${shape}</b><span>${bytes} · back in HBM</span>`, [fromC[0], fromC[1] + 0.55, fromC[2]], "c"),
+    stored: tag(`<b>y · 1×${model.n}</b><span>${formatBytes(outputBytes())} · back in HBM</span>`, [fromC[0], fromC[1] + 0.55, fromC[2]], "c"),
   };
   labels.l2.center.set(0.5, 0);
   overlays.add(...Object.values(labels));
@@ -637,7 +651,14 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
     for (const name of ["hbm", "hbmRight", "gpu", "smTop", "smBottom"] as const) {
       labels[name].element.style.opacity = architecture;
     }
-    labels.a.position.set(atA[0], atA[1] + 0.55, atA[2] - MATRIX * 0.78);
+    const inFlightToL2 =
+      (sample.travelA > 0.015 && sample.travelA < 0.992) ||
+      (sample.travelB > 0.015 && sample.travelB < 0.992);
+    const smWork = sample.blocks.some((block) => block.load > 0.04 || block.progress > 0.04);
+    const cMotion = sample.travelC > 0.015 || sample.assemble > 0.02;
+    const l2Html = l2TagHtml(inFlightToL2 || sample.focus.tour > 0 || smWork || cMotion);
+    if (labels.l2.element.innerHTML !== l2Html) labels.l2.element.innerHTML = l2Html;
+    labels.a.position.set(atA[0], atA[1] + 0.55, atA[2] - 0.48);
     labels.b.position.set(atB[0], atB[1] + 0.55, atB[2] - MATRIX * 0.78);
     labels.working.element.style.opacity = callout.workingSet.toFixed(3);
     labels.stored.element.style.opacity = callout.stored.toFixed(3);
@@ -662,7 +683,8 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
       const y = at[1] + 0.62;
       sliceA.position.set(at[0], y, at[2]);
       sliceB.position.set(at[0], y + 0.01, at[2]);
-      sliceA.scale.set(Math.max(focusBlock.load, 0.04), 1, 1);
+      // x is reused whole: reveal the complete 1×256 row for every active SM.
+      sliceA.scale.set(1, 1, 1);
       sliceB.scale.set(1, Math.max(focusBlock.load, 0.04), 1);
       sliceAMat.uniforms.uOpacity.value = panelFade;
       sliceBMat.uniforms.uOpacity.value = panelFade;
@@ -673,20 +695,18 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
     if (focusBlock && sample.focus.row >= 0) {
       const at = smWorld(sample.focus.row, sample.focus.col);
       labels.tileC.position.set(at[0] + MATRIX * 0.5 + 0.18, at[1] + 0.7, at[2]);
-      labels.tileC.element.innerHTML = `<b>C · 32×32</b><span>${kb(cTileBytes())}</span>`;
+      labels.tileC.element.innerHTML = `<b>y · 1×${model.tileN}</b><span>${formatBytes(outputTileBytes())}</span>`;
     }
     if (sample.focus.row >= 0) {
-      const { n, tileM, tileN } = model;
-      const aStart = sample.focus.row * tileM;
+      const { k, tileN } = model;
       const bStart = sample.focus.col * tileN;
-      const [v0, v1] = rowBand(sample.focus.row);
-      const onA = planePoint(L2_A.center, MATRIX, MATRIX, 0.5, (v0 + v1) / 2);
+      const onA = planePoint(L2_A.center, L2_A.width, L2_A.depth, 0.5, 0.5);
       labels.panelA.position.set(L2_A.center[0] - MATRIX * 1.55, onA[1] + 0.4, onA[2]);
-      labels.panelA.element.innerHTML = `<b>A[${aStart}:${aStart + tileM}, :] · ${tileM}×${n}</b><span>${cacheUsed(aPanelBytes())}</span>`;
+      labels.panelA.element.innerHTML = `<b>x[0, :] · 1×${k}</b><span>${formatBytes(dataBytes())} · reused</span>`;
       const [u0, u1] = colBand(sample.focus.col);
       const onB = planePoint(L2_B.center, MATRIX, MATRIX, (u0 + u1) / 2, 0);
       labels.panelB.position.set(onB[0], onB[1] + 0.4, onB[2] + 0.95);
-      labels.panelB.element.innerHTML = `<b>B[:, ${bStart}:${bStart + tileN}] · ${n}×${tileN}</b><span>${cacheUsed(bPanelBytes())}</span>`;
+      labels.panelB.element.innerHTML = `<b>W[:, ${bStart}:${bStart + tileN}] · ${k}×${tileN}</b><span>${formatBytes(weightPanelBytes())} · dominates</span>`;
     }
   }
 
