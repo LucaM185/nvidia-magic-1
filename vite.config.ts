@@ -10,6 +10,7 @@ export default defineConfig({
         hbmToSm: resolve(import.meta.dirname, "HBMtoSM/index.html"),
         hbmToSmDecode: resolve(import.meta.dirname, "HBMtoSM-decode/index.html"),
         smToResults: resolve(import.meta.dirname, "SMtoResults/index.html"),
+        smToResultsDecode: resolve(import.meta.dirname, "SMtoResults-decode/index.html"),
       },
     },
   },
