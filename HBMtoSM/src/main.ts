@@ -6,7 +6,7 @@ import { smWorld } from "./layout";
 import { aPanelBytes, bPanelBytes, blockAt, cacheUsed, cTileBytes, getModel, residentBytes } from "./model/gemm";
 import { DURATION, PHASES, sampleTimeline, workloadCaption, type TimelineSample } from "./model/timeline";
 import { createWorld, type PickHit } from "./scene/world";
-import "./style.css";
+import { HUD_FRAME_INTERVAL, MAX_PIXEL_RATIO, MIN_FRAME_INTERVAL } from "../../src/render-performance";
 
 const viewport = document.querySelector<HTMLDivElement>("#viewport");
 if (!viewport) throw new Error("missing viewport");
@@ -21,7 +21,7 @@ const renderer = new THREE.WebGLRenderer({
   powerPreference: "high-performance",
   stencil: false,
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.35));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO));
 renderer.setClearColor(0x08090d, 1);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -233,10 +233,15 @@ window.addEventListener("resize", resize);
 resize();
 
 let last = performance.now();
+let lastFrame = 0;
+let lastHud = -Infinity;
 function frame(now: number): void {
+  requestAnimationFrame(frame);
+  if (document.hidden || now - lastFrame < MIN_FRAME_INTERVAL) return;
+  lastFrame = now;
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
-  if (playing && mode === "timeline" && !document.hidden) {
+  if (playing && mode === "timeline") {
     t = Math.min(DURATION, t + dt);
     if (t >= DURATION) playing = false;
   }
@@ -244,10 +249,12 @@ function frame(now: number): void {
   const sample = sampleTimeline(t);
   world.update(sample, inspectTarget);
   applyCamera(sample, dt);
-  renderHud(sample);
+  if (now - lastHud >= HUD_FRAME_INTERVAL || scrubbing) {
+    renderHud(sample);
+    lastHud = now;
+  }
   renderer.render(scene, camera);
   labels.render(scene, camera);
-  requestAnimationFrame(frame);
 }
 
 function applyCamera(sample: TimelineSample, dt: number): void {
@@ -279,6 +286,8 @@ function renderHud(sample: TimelineSample): void {
   setText("#a-status", sample.meters.a);
   setText("#b-status", sample.meters.b);
   setText("#c-status", sample.meters.c);
+  setText("#gpu-clock", sample.gpu.label);
+  document.querySelector("#gpu-clock")?.classList.toggle("paused", !sample.gpu.running);
   setWidth("#a-bar", sample.meters.aBar);
   setWidth("#b-bar", sample.meters.bBar);
   setWidth("#c-bar", sample.meters.cBar);

@@ -170,6 +170,79 @@ html, body {
 .meter.b em { color: var(--b); }
 .meter.c em { color: var(--c); }
 
+.gpu-clock {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.gpu-clock span {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.gpu-clock b { font-weight: 400; color: var(--ink); }
+.gpu-clock b.paused { color: var(--muted); }
+
+.intensity {
+  position: absolute;
+  top: 284px;
+  left: 26px;
+  width: min(280px, 32vw);
+  padding: 14px 15px;
+  border: 1px solid rgba(61, 220, 151, 0.3);
+  border-radius: 12px;
+  background: rgba(8, 9, 13, 0.72);
+  backdrop-filter: blur(12px);
+}
+
+.intensity > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+.intensity > div + div { margin-top: 5px; }
+
+.intensity div b {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.intensity div span {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.intensity > strong {
+  display: block;
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--c);
+  font: 500 15px "IBM Plex Mono", ui-monospace, monospace;
+}
+
+.intensity > small {
+  display: block;
+  margin-top: 4px;
+  color: var(--c);
+  font: 10px "IBM Plex Mono", ui-monospace, monospace;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 #inspect {
   pointer-events: auto;
   position: absolute;
@@ -346,9 +419,8 @@ html, body {
 .scene-switch {
   position: fixed;
   z-index: 8;
-  top: 24px;
-  left: 50%;
-  transform: translateX(-50%);
+  bottom: 16px;
+  left: 18px;
   padding: 8px 13px;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -360,12 +432,12 @@ html, body {
 }
 
 .scene-switch:hover { background: rgba(255, 255, 255, 0.09); }
-.decode-switch { top: 58px; }
 
 @media (max-width: 900px) {
   .top { flex-direction: column; gap: 12px; }
   .phase { text-align: left; max-width: none; }
   .meters { position: static; width: auto; margin-top: 8px; }
+  .intensity { display: none; }
   .marks { display: none; }
   #inspect { bottom: 96px; }
 }

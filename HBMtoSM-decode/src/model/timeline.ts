@@ -1,5 +1,15 @@
 import { SM_TOUR, hbmMatrixCenter, hbmModule, type Vec3 } from "../layout";
 import {
+  CYCLES_PER_SECOND,
+  GPU,
+  createClock,
+  cyclesToSeconds,
+  formatGpuTime,
+  hbmTransferCycles,
+  type KernelBudget,
+} from "../../../src/gpu-timing";
+import { CHUNK_COUNT, CYCLES_AFTER_LAST_CHUNK, FMA_TOTAL, K, SLICE_N } from "../../../SMtoResults-decode/src/timeline";
+import {
   MODEL,
   arithmeticIntensity,
   bytesPerActiveSm,
@@ -13,21 +23,73 @@ import {
   type SMState,
 } from "./gemm";
 
-export type ReductionMode = "sequential" | "tree";
+/**
+ * Physical steps run on the shared GPU clock (src/gpu-timing.ts), the same
+ * one the prefill scene uses. The tour and the concatenation are narration:
+ * the clock is stopped while they play.
+ */
+const HBM_START = 2;
+/** x and W share HBM bandwidth. The 1 KB row is pure latency; W adds 256 KB of streaming. */
+const X_IN_CYCLES = hbmTransferCycles(dataBytes());
+const W_IN_CYCLES = hbmTransferCycles(dataBytes() + weightBytes());
+const X_IN_END = HBM_START + cyclesToSeconds(X_IN_CYCLES);
+const W_IN_END = HBM_START + cyclesToSeconds(W_IN_CYCLES);
+const CACHED_T = W_IN_END + 0.2;
 
-export const DURATION = 30;
-
-const TOUR_START = 8;
+const TOUR_START = CACHED_T + 2;
 const TOUR_STEP = 0.9;
 const TOUR_END = TOUR_START + SM_TOUR.length * TOUR_STEP;
-const FILL_START = TOUR_END + 0.2;
-const FILL_STAGGER = 0.055;
-const COMPUTE_START = FILL_START + 0.52;
-const MATMUL_DURATION = 1.35;
-export const REDUCE_START = 18;
-export const REDUCE_DURATION = 6.3;
-export const REDUCE_END = REDUCE_START + REDUCE_DURATION;
-const WRITE_START = 24.7;
+
+/**
+ * Per-SM budget: L2 latency, a 64 B/cycle stream of x and eight 4 KB W chunks,
+ * then what the decode SM scene does after its last chunk lands (load it,
+ * multiply it, shuffle, store). The FMAs hide inside the stream.
+ */
+const X_COPY_START = GPU.l2Latency;
+const X_ARRIVAL = X_COPY_START + (K * 4) / GPU.smBytesPerCycle;
+const CHUNK_COPY_CYCLES = (K / CHUNK_COUNT) * SLICE_N * 4 / GPU.smBytesPerCycle;
+const chunkArrival = (chunk: number) => X_ARRIVAL + (chunk + 1) * CHUNK_COPY_CYCLES;
+const END_CYCLE = chunkArrival(CHUNK_COUNT - 1) + CYCLES_AFTER_LAST_CHUNK;
+const FMA_CYCLES = FMA_TOTAL / GPU.fp32Lanes;
+const SM_CYCLES = (MODEL.activeSmCount - 1) * GPU.launchStagger + END_CYCLE;
+const RUN_START = TOUR_END + 0.2;
+const RUN = { t: RUN_START, cycle: W_IN_CYCLES, cycles: SM_CYCLES };
+const RUN_END = RUN_START + cyclesToSeconds(SM_CYCLES);
+
+export const CONCAT_START = RUN_END + 0.5;
+export const CONCAT_DURATION = 6.3;
+export const CONCAT_END = CONCAT_START + CONCAT_DURATION;
+const WRITE_START = CONCAT_END + 0.4;
+const OUT_START = WRITE_START + 1.25;
+const HBM_OUT_CYCLES = hbmTransferCycles(outputBytes());
+const OUT = {
+  t: OUT_START,
+  cycle: W_IN_CYCLES + SM_CYCLES,
+  cycles: HBM_OUT_CYCLES,
+  prelude: { from: CONCAT_START - 0.2, share: 0.4 },
+};
+const OUT_END = OUT_START + cyclesToSeconds(HBM_OUT_CYCLES);
+export const DURATION = OUT_END + 4.5;
+
+const CLOCK = createClock([{ t: HBM_START, cycle: 0, cycles: W_IN_CYCLES }, RUN, OUT]);
+/** Cycle budget for the side-by-side comparison, in kernel cycles from 0. */
+export const BUDGET: KernelBudget = {
+  hbmIn: W_IN_CYCLES,
+  sm: SM_CYCLES,
+  out: HBM_OUT_CYCLES,
+  total: CLOCK.total,
+  inBytes: dataBytes() + weightBytes(),
+  outBytes: outputBytes(),
+  flops: flopCount(),
+  activeSms: MODEL.activeSmCount,
+  // One FMA burst per W chunk as it lands.
+  math: Array.from({ length: CHUNK_COUNT }, (_, chunk): [number, number] => {
+    const start = W_IN_CYCLES + chunkArrival(chunk);
+    return [start, start + FMA_CYCLES / CHUNK_COUNT];
+  }),
+};
+
+const cyc = (cycles: number) => Math.round(cycles).toLocaleString("en-US");
 
 export interface Phase {
   t: number;
@@ -43,56 +105,56 @@ export const PHASES: Phase[] = [
     id: "establish",
     short: "Decode",
     title: "One row meets a weight matrix",
-    body: "x is only 1×256 (1 KB), while W is 256×256 (256 KB). This is the matrix-vector shape produced by one-token-at-a-time decoding.",
+    body: `x is only 1×256 (1 KB), while W is 256×256 (256 KB). One GPU clock drives this scene and the prefill scene: ${CYCLES_PER_SECOND} cycles per second of playback.`,
   },
   {
-    t: 2,
+    t: HBM_START,
     id: "fill",
     short: "To L2",
     title: "The weights dominate the transfer",
-    body: "The thin blue data row and the orange weight matrix move from HBM to L2. Almost every transferred byte belongs to W.",
+    body: `x is only latency: it lands after ~${cyc(X_IN_CYCLES)} cycles. W adds 256 KB of streaming on top: ~${cyc(W_IN_CYCLES)} cycles. Almost every byte belongs to W.`,
   },
   {
-    t: 6.1,
+    t: CACHED_T,
     id: "cached",
     short: "In cache",
     title: "257 KB moved for one row",
-    body: "x + W occupy 257 KB. The multiply performs only 131k FLOPs: an ideal arithmetic intensity of about 0.5 FLOP per byte.",
+    body: "The input activation x and weight matrix W occupy 257 KB together. The multiply performs only 131k FLOPs: about 0.5 FLOP per byte.",
   },
   {
     t: TOUR_START,
     id: "sms",
     short: "Eight SMs",
     title: "Only one strip of SMs has work",
-    body: "Eight SMs split the 256-wide output. Each receives the same 1 KB row and a different 32 KB weight panel; the other 56 SMs stay idle.",
+    body: "Clock stopped. Eight SMs split the 256-wide output. Each receives the same 1 KB row and a different 32 KB weight panel; the other 56 SMs stay idle.",
   },
   {
-    t: FILL_START,
+    t: RUN_START,
     id: "compute",
-    short: "Brief math",
+    short: "Waiting on memory",
     title: "Memory movement outweighs math",
-    body: "The eight dot-product groups finish quickly. Weight bytes were streamed once, but each weight contributes to only one multiply-add for this token.",
+    body: `Clock running. Each SM waits ~${GPU.l2Latency} cycles for L2, then streams 33 KB at 64 B/cycle. Its ${GPU.fp32Lanes} FP32 lanes need only ${cyc(FMA_CYCLES)} cycles of FMAs; the SM is done after ~${cyc(END_CYCLE)} cycles, almost all of it waiting.`,
   },
   {
-    t: REDUCE_START,
-    id: "reduce",
-    short: "Accumulate",
-    title: "Combine the eight partials",
-    body: "Choose a sequential dependency chain or a three-round parallel tree. Everything before and after this reduction is identical.",
+    t: CONCAT_START,
+    id: "concatenate",
+    short: "Concatenate",
+    title: "Place eight output slices side by side",
+    body: "Clock stopped. Each SM owns a different 1×32 range of y. The ranges join into one 1×256 row without any cross-SM addition; on the GPU they are just stores to adjacent addresses.",
   },
   {
     t: WRITE_START,
     id: "writeback",
     short: "Output",
-    title: "The accumulated result becomes one row",
-    body: "After the reduction, the combined result forms y, a 1×256 row of only 1 KB, and returns to HBM.",
+    title: "The concatenated row returns to HBM",
+    body: `The eight slices form y, a 1×256 row of only 1 KB. Returning it is almost pure latency: ~${cyc(HBM_OUT_CYCLES)} cycles.`,
   },
   {
-    t: 28.2,
+    t: OUT_END + 0.4,
     id: "bound",
     short: "Memory-bound",
-    title: "Low arithmetic intensity",
-    body: "About 258 KB cross the memory boundary for 131k FLOPs: ≈0.5 FLOP/byte. Throughput is constrained by bandwidth, not peak compute.",
+    title: `${cyc(CLOCK.total)} cycles, almost no math`,
+    body: `HBM in ${cyc(W_IN_CYCLES)} · SMs ${cyc(SM_CYCLES)} (${cyc(FMA_CYCLES)} of FMAs) · HBM out ${cyc(HBM_OUT_CYCLES)}. ≈0.5 FLOP/byte: memory latency and bandwidth set the time, not peak compute. Prefill does 256× the math in about twice the time.`,
   },
 ];
 
@@ -123,6 +185,8 @@ export interface BlockVisual {
 
 export interface TimelineSample {
   t: number;
+  /** Shared GPU clock. Stopped during narration. */
+  gpu: { cycles: number; running: boolean; label: string };
   phase: Phase;
   camera: { position: Vec3; target: Vec3 };
   hbmA: MatrixLook;
@@ -143,12 +207,10 @@ export interface TimelineSample {
   focus: { row: number; col: number; amount: number; tour: number };
   assemble: number;
   tileOpacity: number;
-  reduction: {
-    mode: ReductionMode;
+  concatenate: {
     active: number;
     complete: number;
-    step: number;
-    stepProgress: number;
+    progress: number;
     status: string;
   };
   blocks: BlockVisual[];
@@ -171,6 +233,10 @@ interface CameraKey {
 
 function clamp01(v: number): number {
   return Math.min(1, Math.max(0, v));
+}
+
+function linear(t: number, a: number, b: number): number {
+  return clamp01((t - a) / (b - a));
 }
 
 function smooth(t: number): number {
@@ -218,9 +284,9 @@ function cameraAt(t: number): { position: Vec3; target: Vec3 } {
   const cModule = hbmMatrixCenter(hbmModule("C"));
   const keys: CameraKey[] = [
     { t: 0, position: [0, 25.5, 14.5], target: [0, 0.25, 0] },
-    { t: 2, position: [0, 22, 10.5], target: [0, 0.65, 0] },
-    { t: 4.2, position: [0, 15.8, 5.7], target: [0, 0.82, 0] },
-    { t: 6.2, position: [0.08, 15.5, 4.4], target: [0, 0.68, 0] },
+    { t: HBM_START, position: [0, 22, 10.5], target: [0, 0.65, 0] },
+    { t: HBM_START + 1.8, position: [0, 15.8, 5.7], target: [0, 0.82, 0] },
+    { t: CACHED_T + 0.2, position: [0.08, 15.5, 4.4], target: [0, 0.68, 0] },
     { t: TOUR_START, position: [0.04, 14.8, 5.2], target: [0, 0.58, -0.45] },
     { t: TOUR_END, position: [0.02, 14.5, 5.5], target: [0, 0.55, -0.45] },
     { t: WRITE_START, position: [0.15, 12.2, 8], target: [0, 1.35, 0] },
@@ -278,20 +344,22 @@ function blockVisual(t: number, row: number, col: number, tour: TourHit | null):
     return { row, col, state: "idle", progress: 0, load: 0, dim: tour ? 0.12 : 0.42, hot: 0 };
   }
 
-  const stepIndex = col;
-  const stepStart = TOUR_START + stepIndex * TOUR_STEP;
-  let load = ramp(t, stepStart + 0.1, stepStart + 0.42);
+  // Tour preview, with the clock stopped. It clears before the real run.
+  const stepStart = TOUR_START + col * TOUR_STEP;
+  let load = ramp(t, stepStart + 0.1, stepStart + 0.42) * (1 - ramp(t, TOUR_END - 0.2, RUN_START));
   let progress = 0;
-  if (t >= FILL_START) {
-    const stagger = col * FILL_STAGGER;
-    load = Math.max(load, ramp(t, FILL_START + stagger, FILL_START + 0.34 + stagger));
-    progress = ramp(t, COMPUTE_START + stagger, COMPUTE_START + stagger + MATMUL_DURATION);
+  if (t >= RUN_START) {
+    // Same cycle marks as the decode SM scene, offset by this SM's launch.
+    const launch = W_IN_CYCLES + col * GPU.launchStagger;
+    const at = (cycle: number) => CLOCK.timeOf(RUN, launch + cycle);
+    load = Math.max(load, linear(t, at(X_COPY_START), at(chunkArrival(CHUNK_COUNT - 1))));
+    progress = linear(t, at(chunkArrival(0)), at(END_CYCLE));
   }
 
   const isCurrent = tour !== null && tour.col === col && tour.amount > 0.18;
   let state: SMState = "idle";
   if (t >= TOUR_START) state = "assigned";
-  if (load > 0.22 && progress < 0.97) state = progress < 0.2 ? "loading" : "computing";
+  if (load > 0.02 && progress < 0.97) state = progress <= 0 ? "loading" : "computing";
   if (progress >= 0.97) state = "complete";
 
   let dim = 1;
@@ -299,34 +367,22 @@ function blockVisual(t: number, row: number, col: number, tour: TourHit | null):
   return { row, col, state, progress, load, dim, hot: isCurrent ? 1 : 0 };
 }
 
-function reductionAt(t: number, mode: ReductionMode): TimelineSample["reduction"] {
-  const progress = clamp01((t - REDUCE_START) / REDUCE_DURATION);
-  const steps = mode === "sequential" ? 7 : 3;
-  const scaled = Math.min(steps - Number.EPSILON, progress * steps);
-  const step = Math.min(steps - 1, Math.floor(scaled));
-  const stepProgress = smooth(scaled - step);
-  const active = ramp(t, REDUCE_START - 0.18, REDUCE_START + 0.12) * (1 - ramp(t, REDUCE_END, REDUCE_END + 0.22));
-  const complete = ramp(t, REDUCE_END - 0.08, REDUCE_END + 0.18);
-
-  let status: string;
-  if (mode === "sequential") {
-    status = progress >= 1
-      ? "7 dependent additions · O(N) complete"
-      : `Step ${step + 1}/7 · ${"12345678".slice(0, step + 1)} + ${step + 2}`;
-  } else {
-    const rounds = ["1+2 · 3+4 · 5+6 · 7+8", "12+34 · 56+78", "1234+5678"];
-    status = progress >= 1 ? "3 parallel rounds · O(log N) complete" : `Round ${step + 1}/3 · ${rounds[step]}`;
-  }
-  return { mode, active, complete, step, stepProgress, status };
+function concatenateAt(t: number): TimelineSample["concatenate"] {
+  const progress = clamp01((t - CONCAT_START) / CONCAT_DURATION);
+  const active = ramp(t, CONCAT_START - 0.18, CONCAT_START + 0.12) * (1 - ramp(t, CONCAT_END, CONCAT_END + 0.22));
+  const complete = ramp(t, CONCAT_END - 0.08, CONCAT_END + 0.18);
+  const placed = Math.min(8, Math.floor(progress * 8 + 0.001));
+  const status = progress >= 1 ? "8 slices · one contiguous output row" : `${placed}/8 slices placed · no addition`;
+  return { active, complete, progress, status };
 }
 
-export function sampleTimeline(time: number, reductionMode: ReductionMode = "sequential"): TimelineSample {
+export function sampleTimeline(time: number): TimelineSample {
   const t = Math.min(DURATION, Math.max(0, time));
   const model = getModel();
   const tour = tourAt(t);
-  const travelA = ramp(t, 2.1, 4.25);
-  const travelB = ramp(t, 3.05, 6.05);
-  const travelC = ramp(t, WRITE_START + 1.25, WRITE_START + 3.05);
+  const travelA = linear(t, HBM_START, X_IN_END);
+  const travelB = linear(t, HBM_START, W_IN_END);
+  const travelC = linear(t, OUT_START, OUT_END);
   const cMover = ramp(t, WRITE_START + 0.65, WRITE_START + 0.95);
   const lanesB = quietLanes();
   if (tour) lanesB[tour.col] = tour.tour;
@@ -335,40 +391,34 @@ export function sampleTimeline(time: number, reductionMode: ReductionMode = "seq
   const blocks = model.blocks.map((block) => blockVisual(t, block.row, block.col, tour));
   const activeBlocks = blocks.filter((block) => block.row === MODEL.activeRow);
   const avg = activeBlocks.reduce((sum, block) => sum + block.progress, 0) / activeBlocks.length;
-  const streamA = ramp(t, 2.05, 2.4) * (1 - ramp(t, 4.1, 4.5));
-  const streamB = ramp(t, 3, 3.35) * (1 - ramp(t, 5.9, 6.35));
-  const returning = ramp(t, WRITE_START + 1.2, WRITE_START + 1.55) * (1 - ramp(t, WRITE_START + 2.9, WRITE_START + 3.3));
+  const streamA = ramp(t, HBM_START - 0.05, HBM_START + 0.3) * (1 - ramp(t, X_IN_END - 0.15, X_IN_END + 0.35));
+  const streamB = ramp(t, HBM_START - 0.05, HBM_START + 0.3) * (1 - ramp(t, W_IN_END - 0.15, W_IN_END + 0.35));
+  const returning = ramp(t, OUT_START, OUT_START + 0.35) * (1 - ramp(t, OUT_END - 0.2, OUT_END + 0.25));
   const phase = { ...phaseAt(t) };
   if (tour) Object.assign(phase, tourCopy(tour.index));
-  const reduction = reductionAt(t, reductionMode);
-  if (phase.id === "reduce") {
-    phase.title = reductionMode === "sequential" ? "Sequential accumulation · O(N)" : "Tree accumulation · O(log N)";
-    phase.body = reductionMode === "sequential"
-      ? "One running value moves from N to N+1, then to N+2, continuing through all eight partials. Seven additions sit on one dependency chain."
-      : "Independent pairs add together at the same time, then the four groups become two, then one. Eight partials collapse in three synchronized rounds.";
-  }
+  const concatenate = concatenateAt(t);
 
   let cText = "waiting";
   let cBar = 0;
   if (tour) {
     cText = `1×32 · SM ${tour.row},${tour.col}`;
     cBar = ((tour.index + tour.local) / SM_TOUR.length) * 0.45;
-  } else if (t >= FILL_START && avg < 0.98) {
+  } else if (t >= RUN_START && avg < 0.98) {
     cText = "8 × 1×32";
     cBar = 0.45 + avg * 0.55;
-  } else if (avg >= 0.98 && t < REDUCE_START) {
-    cText = "8 partials · ready to accumulate";
+  } else if (avg >= 0.98 && t < CONCAT_START) {
+    cText = "8 output slices · ready to concatenate";
     cBar = 0.7;
-  } else if (t >= REDUCE_START && t < REDUCE_END + 0.2) {
-    cText = reduction.status;
-    cBar = 0.7 + clamp01((t - REDUCE_START) / REDUCE_DURATION) * 0.25;
-  } else if (t >= REDUCE_END && t < WRITE_START + 1.1) {
-    cText = "1 accumulated result";
+  } else if (t >= CONCAT_START && t < CONCAT_END + 0.2) {
+    cText = concatenate.status;
+    cBar = 0.7 + clamp01((t - CONCAT_START) / CONCAT_DURATION) * 0.25;
+  } else if (t >= CONCAT_END && t < OUT_START) {
+    cText = "1 concatenated output row";
     cBar = 1;
-  } else if (t >= WRITE_START + 1.1 && t < WRITE_START + 3.05) {
+  } else if (t >= OUT_START && t < OUT_END) {
     cText = "1×256 · SMs → HBM";
     cBar = 1;
-  } else if (t >= WRITE_START + 3.05) {
+  } else if (t >= OUT_END) {
     cText = "1×256 · 1 KB in HBM";
     cBar = 1;
   }
@@ -377,6 +427,7 @@ export function sampleTimeline(time: number, reductionMode: ReductionMode = "seq
     t,
     phase,
     camera: cameraAt(t),
+    gpu: gpuAt(t),
     hbmA: look({ opacity: lerp(1, 0.2, Math.min(1, travelA / 0.08)), fill: 1, panelEdges: 0.35 }),
     hbmB: look({ opacity: lerp(1, 0.2, Math.min(1, travelB / 0.08)), fill: 1, panelEdges: 0.35 }),
     hbmC: look({ opacity: 0, fill: 1, panelEdges: 0.4 }),
@@ -393,7 +444,7 @@ export function sampleTimeline(time: number, reductionMode: ReductionMode = "seq
       ? look({ opacity: 1, fill: 1, panelEdges: 0.72, lanes: lanesB, laneAxis: 2 })
       : look({ opacity: 1, fill: 1, scan: travelB > 0.02 && travelB < 0.98 ? 1 - travelB : -1, panelEdges: 0.5, laneAxis: 2 }),
     l2C: look({ opacity: 1, fill: 1, panelEdges: 0.7 }),
-    l2Pulse: Math.max(pulse(t, 4.35, 0.75), pulse(t, 6.15, 0.9)),
+    l2Pulse: Math.max(pulse(t, X_IN_END + 0.1, 0.75), pulse(t, W_IN_END + 0.1, 0.9)),
     channelA: { opacity: streamA, active: streamA },
     channelB: { opacity: streamB, active: streamB },
     returnFlow: { opacity: returning, active: returning },
@@ -404,22 +455,42 @@ export function sampleTimeline(time: number, reductionMode: ReductionMode = "seq
     windowContent: 1 - ramp(t, WRITE_START + 0.05, WRITE_START + 0.85),
     focus: tour ? { row: tour.row, col: tour.col, amount: tour.amount, tour: tour.tour } : { row: -1, col: -1, amount: 0, tour: 0 },
     assemble: ramp(t, WRITE_START, WRITE_START + 0.85),
-    tileOpacity: ramp(t, FILL_START, FILL_START + 0.4),
-    reduction,
+    tileOpacity: ramp(t, RUN_START, RUN_START + 0.4),
+    concatenate,
     blocks,
     callouts: {
-      workingSet: ramp(t, 6.2, 6.65) * (1 - ramp(t, 7.7, 8.1)),
-      stored: ramp(t, WRITE_START + 2.8, WRITE_START + 3.25),
+      workingSet: ramp(t, CACHED_T + 0.1, CACHED_T + 0.55) * (1 - ramp(t, TOUR_START - 0.3, TOUR_START + 0.1)),
+      stored: ramp(t, OUT_END - 0.25, OUT_END + 0.2),
     },
     meters: {
-      a: t < 2.1 ? "x · 1×256 · 1 KB in HBM" : t > 4.3 ? "x · 1×256 · 1 KB in L2" : "x · 1×256 · HBM → L2",
-      b: t < 3.05 ? "W · 256×256 · 256 KB in HBM" : t > 6.1 ? "W · 256×256 · 256 KB in L2" : "W · 256×256 · HBM → L2",
+      a: t < HBM_START ? "x · 1×256 · 1 KB in HBM" : travelA >= 1 ? "x · 1×256 · 1 KB in L2" : "x · 1×256 · HBM → L2",
+      b: t < HBM_START ? "W · 256×256 · 256 KB in HBM" : travelB >= 1 ? "W · 256×256 · 256 KB in L2" : "W · 256×256 · HBM → L2",
       c: cText,
       aBar: travelA,
       bBar: travelB,
       cBar,
     },
   };
+}
+
+function gpuAt(t: number): TimelineSample["gpu"] {
+  const cycles = CLOCK.cycleAt(t);
+  const running = CLOCK.running(t);
+  let label = formatGpuTime(cycles);
+  if (cycles <= 0) label = "kernel not started";
+  else if (cycles >= CLOCK.total) label += " · done";
+  else if (!running) label += " · paused to explain";
+  return { cycles, running, label };
+}
+
+/**
+ * Drives the scene by GPU cycle alone, skipping narration. Used by the
+ * side-by-side comparison, where both scenes share one cycle counter.
+ */
+export function sampleAtCycle(cycle: number): TimelineSample {
+  const sample = sampleTimeline(CLOCK.timeAtCycle(cycle));
+  const done = cycle >= CLOCK.total;
+  return { ...sample, gpu: { cycles: cycle, running: cycle > 0 && !done, label: formatGpuTime(cycle) } };
 }
 
 export function workloadCaption(): string {

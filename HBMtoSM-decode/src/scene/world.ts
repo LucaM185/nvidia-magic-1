@@ -20,6 +20,7 @@ import {
   SM_TOUR,
   TILE_SIZE,
   VECTOR_DEPTH,
+  cTileSlot,
   colBand,
   hbmFootprint,
   hbmMatrixCenter,
@@ -72,7 +73,7 @@ interface SquarePlate {
   plate: THREE.MeshStandardMaterial;
 }
 
-interface ReductionTokenVisual {
+interface OutputSegmentVisual {
   position: Vec3;
   opacity: number;
   scale: number;
@@ -99,7 +100,7 @@ function tag(html: string, position: Vec3, className = ""): CSS2DObject {
 
 function l2TagHtml(compact: boolean): string {
   if (compact) return `<b>L2</b>`;
-  return `<b>L2</b><span class="kicker">40 MB</span><span>x+W ${cacheUsed(residentBytes())}</span>`;
+  return `<b>L2</b><span class="kicker">40 MB</span><span>input x + weights W · ${cacheUsed(residentBytes())}</span>`;
 }
 
 function metal(color: number, roughness = 0.58): THREE.MeshStandardMaterial {
@@ -164,7 +165,7 @@ function bToSm(row: number, col: number): THREE.Vector3[] {
 
 const IDLE_CAPS = [0x6a7380, 0x4e5966, 0x7d8794, 0x3e4854, 0x5c6772, 0x8a94a1, 0x55606c, 0x454e5a, 0x6e7884];
 
-export function createWorld(scene: THREE.Scene, debug = false): World {
+export function createWorld(scene: THREE.Scene, debug = false, showLabels = true): World {
   const gpu = new THREE.Group();
   gpu.name = "gpu";
   scene.add(gpu);
@@ -498,13 +499,14 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
     stored: tag(`<b>y · 1×${model.n}</b><span>${formatBytes(outputBytes())} · back in HBM</span>`, [fromC[0], fromC[1] + 0.55, fromC[2]], "c"),
   };
   labels.l2.center.set(0.5, 0);
-  overlays.add(...Object.values(labels));
+  if (showLabels) overlays.add(...Object.values(labels));
 
-  const reductionLabels = Array.from({ length: GRID }, (_, col) => {
+  const segmentLabels = Array.from({ length: GRID }, (_, col) => {
     const at = smWorld(MODEL.activeRow, col);
-    const label = tag(`<b>${col + 1}</b>`, [at[0], at[1] + 1.02, at[2]], "c reduction-token");
+    const start = col * MODEL.tileN;
+    const label = tag(`<b>${start}:${start + MODEL.tileN}</b>`, [at[0], at[1] + 1.02, at[2]], "c output-segment");
     label.center.set(0.5, 0.5);
-    overlays.add(label);
+    if (showLabels) overlays.add(label);
     return label;
   });
 
@@ -513,89 +515,22 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
     return [at[0], at[1] + 0.66, at[2]];
   }
 
-  function moveToken(from: number, to: number, u: number): Vec3 {
-    const a = tokenAnchor(from);
-    const b = tokenAnchor(to);
-    return [
-      a[0] + (b[0] - a[0]) * u,
-      a[1] + (b[1] - a[1]) * u + Math.sin(Math.PI * u) * 0.48,
-      a[2] + (b[2] - a[2]) * u,
-    ];
-  }
-
-  function reductionToken(sample: TimelineSample, col: number): ReductionTokenVisual {
-    const { mode, step, stepProgress } = sample.reduction;
+  function outputSegment(sample: TimelineSample, col: number): OutputSegmentVisual {
     const at = tokenAnchor(col);
-    const finalState = sample.phase.id !== "reduce" && sample.reduction.complete > 0.5;
-    if (finalState) {
-      if (col !== GRID - 1) return { position: at, opacity: 0, scale: 1, label: "" };
-      const target = C_FORM;
-      const u = sample.assemble;
-      return {
-        position: [
-          at[0] + (target[0] - at[0]) * u,
-          at[1] + (target[1] - at[1]) * u + Math.sin(Math.PI * u) * 0.72,
-          at[2] + (target[2] - at[2]) * u,
-        ],
-        opacity: 1 - sample.cMover,
-        scale: 1 + (GRID - 1) * u,
-        label: "12345678",
-      };
-    }
-
-    if (mode === "sequential") {
-      if (col < step) return { position: at, opacity: 0, scale: 1, label: "" };
-      if (col === step) {
-        return {
-          position: moveToken(step, step + 1, stepProgress),
-          opacity: 1 - smooth01((stepProgress - 0.72) / 0.28),
-          scale: 1,
-          label: "12345678".slice(0, step + 1),
-        };
-      }
-      if (col === step + 1) {
-        return {
-          position: at,
-          opacity: 1,
-          scale: 1 + Math.sin(Math.PI * stepProgress) * 0.2,
-          label: stepProgress > 0.52 ? "12345678".slice(0, step + 2) : String(col + 1),
-        };
-      }
-      return { position: at, opacity: 1, scale: 1, label: String(col + 1) };
-    }
-
-    const survivors = [[0, 1, 2, 3, 4, 5, 6, 7], [1, 3, 5, 7], [3, 7]];
-    const sources = [[0, 2, 4, 6], [1, 5], [3]];
-    const targets = [[1, 3, 5, 7], [3, 7], [7]];
-    const labelsBefore = [
-      ["1", "2", "3", "4", "5", "6", "7", "8"],
-      ["", "12", "", "34", "", "56", "", "78"],
-      ["", "", "", "1234", "", "", "", "5678"],
-    ];
-    const labelsAfter = [
-      ["", "12", "", "34", "", "56", "", "78"],
-      ["", "", "", "1234", "", "", "", "5678"],
-      ["", "", "", "", "", "", "", "12345678"],
-    ];
-    if (!survivors[step].includes(col)) return { position: at, opacity: 0, scale: 1, label: "" };
-    const sourceIndex = sources[step].indexOf(col);
-    if (sourceIndex >= 0) {
-      return {
-        position: moveToken(col, targets[step][sourceIndex], stepProgress),
-        opacity: 1 - smooth01((stepProgress - 0.72) / 0.28),
-        scale: 1,
-        label: labelsBefore[step][col],
-      };
-    }
-    if (targets[step].includes(col)) {
-      return {
-        position: at,
-        opacity: 1,
-        scale: 1 + Math.sin(Math.PI * stepProgress) * 0.2,
-        label: stepProgress > 0.52 ? labelsAfter[step][col] : labelsBefore[step][col],
-      };
-    }
-    return { position: at, opacity: 1, scale: 1, label: labelsBefore[step][col] };
+    const destination = cTileSlot(MODEL.activeRow, col, C_FORM);
+    const stagger = col * 0.035;
+    const u = smooth01((sample.concatenate.progress - stagger) / (1 - (GRID - 1) * 0.035));
+    const start = col * MODEL.tileN;
+    return {
+      position: [
+        at[0] + (destination[0] - at[0]) * u,
+        at[1] + (destination[1] - at[1]) * u + Math.sin(Math.PI * u) * 0.56,
+        at[2] + (destination[2] - at[2]) * u,
+      ],
+      opacity: 1 - sample.assemble,
+      scale: 1,
+      label: `${start}:${start + MODEL.tileN}`,
+    };
   }
 
   if (debug) {
@@ -725,9 +660,9 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
       windowMesh.setMatrixAt(i, dummy.matrix);
 
       const onSm: Vec3 = [origin[0], origin[1] + 0.66, origin[2]];
-      let token: ReductionTokenVisual = { position: onSm, opacity: 1, scale: 1, label: "" };
-      if (row === MODEL.activeRow && (sample.phase.id === "reduce" || sample.reduction.complete > 0.5)) {
-        token = reductionToken(sample, col);
+      let token: OutputSegmentVisual = { position: onSm, opacity: 1, scale: 1, label: "" };
+      if (row === MODEL.activeRow && (sample.phase.id === "concatenate" || sample.concatenate.complete > 0.5)) {
+        token = outputSegment(sample, col);
       }
       tileOpacity[i] *= token.opacity;
       dummy.position.set(token.position[0], token.position[1], token.position[2]);
@@ -737,10 +672,10 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
       tileMesh.setMatrixAt(i, dummy.matrix);
 
       if (row === MODEL.activeRow) {
-        const tokenLabel = reductionLabels[col];
+        const tokenLabel = segmentLabels[col];
         tokenLabel.position.set(token.position[0], token.position[1] + 0.34, token.position[2]);
         tokenLabel.element.innerHTML = `<b>${token.label}</b>`;
-        const labelOpacity = sample.reduction.active * token.opacity * (token.label ? 1 : 0);
+        const labelOpacity = sample.concatenate.active * token.opacity * (token.label ? 1 : 0);
         tokenLabel.element.style.opacity = labelOpacity.toFixed(3);
       }
     }

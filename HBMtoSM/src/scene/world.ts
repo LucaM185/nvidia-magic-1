@@ -153,7 +153,7 @@ function bToSm(row: number, col: number): THREE.Vector3[] {
 
 const IDLE_CAPS = [0x6a7380, 0x4e5966, 0x7d8794, 0x3e4854, 0x5c6772, 0x8a94a1, 0x55606c, 0x454e5a, 0x6e7884];
 
-export function createWorld(scene: THREE.Scene, debug = false): World {
+export function createWorld(scene: THREE.Scene, debug = false, showLabels = true): World {
   const gpu = new THREE.Group();
   gpu.name = "gpu";
   scene.add(gpu);
@@ -478,7 +478,7 @@ export function createWorld(scene: THREE.Scene, debug = false): World {
     stored: tag(`<b>C · ${shape}</b><span>${bytes} · back in HBM</span>`, [fromC[0], fromC[1] + 0.55, fromC[2]], "c"),
   };
   labels.l2.center.set(0.5, 0);
-  overlays.add(...Object.values(labels));
+  if (showLabels) overlays.add(...Object.values(labels));
 
   if (debug) {
     const markers: [number, number, number][] = [

@@ -1,119 +1,86 @@
-export const CYCLES_PER_SECOND = 3;
+import { CYCLES_PER_SECOND, RESIDENT_CYCLE, SELECT_CYCLE, FIRST_LOAD, planWarp } from "../../src/sm-timing";
+import type { PagePhase } from "../../src/sm-page";
+
+/** Prefill: each warp loads A and B fragments, then one mma.sync runs on its sub-partition's Tensor Core. */
 export const WARP_COUNT = 12;
+export const TENSOR_DURATION = 25;
+export const PLANS = Array.from({ length: WARP_COUNT }, (_, warp) => planWarp(warp, TENSOR_DURATION));
+export const END_K = 156;
+export const WRITEBACK_START = 160;
 export const TOTAL_CYCLES = 190;
 export const DURATION = TOTAL_CYCLES / CYCLES_PER_SECOND;
-export const SHARED_LATENCY = 30;
-export const ISSUE_CYCLES = 1;
-export const ISSUE_INTERVAL = 8;
-export const TENSOR_ISSUE = 1;
-export const TENSOR_DURATION = 25;
-export const LOAD_STARTS = Array.from({ length: WARP_COUNT }, (_, warp) => 12 + warp * ISSUE_INTERVAL);
 
-export function cycleAt(time: number): number {
-  return Math.min(TOTAL_CYCLES, Math.max(0, time * CYCLES_PER_SECOND));
-}
+const at = (cycle: number) => cycle / CYCLES_PER_SECOND;
 
-export interface Phase {
-  t: number;
-  id: string;
-  short: string;
-  title: string;
-  body: string;
-}
-
-export const PHASES: Phase[] = [
+export const PHASES: PagePhase[] = [
   {
     t: 0,
     id: "hardware",
     short: "Hardware",
-    title: "Questo è l’hardware reale dell’SM",
-    body: "Shared memory, register file, warp scheduler e Tensor Core sono strutture fisiche persistenti. Restano sempre al loro posto.",
+    title: "Three stops inside the SM",
+    body: "Shared memory holds the A and B tiles, the register file holds each warp's operands and accumulators, and four sub-partitions each bring 32 FP32 lanes and a Tensor Core. None of it moves.",
   },
   {
-    t: 8 / CYCLES_PER_SECOND,
+    t: at(RESIDENT_CYCLE),
     id: "resident",
-    short: "Warp residenti",
-    title: "I warp sono stato software schedulabile",
-    body: "W0–W11 compaiono nell’overlay, non come blocchi sul chip. Ogni colore identifica un contesto e la sua porzione simbolica del register file.",
+    short: "Warps",
+    title: "Twelve resident warps",
+    body: "W0–W11 are software contexts, not hardware: three per sub-partition. Each colored band is the slice of the register file one warp owns; every row of the timeline below is one warp.",
   },
   {
-    t: 10 / CYCLES_PER_SECOND,
+    t: at(SELECT_CYCLE),
     id: "selected",
-    short: "Seleziona W0",
-    title: "Lo scheduler sceglie un warp pronto",
-    body: "W0 viene selezionato. Il suo token si accende nello scheduler e il colore di W0 evidenzia il percorso hardware che userà.",
+    short: "Pick W0",
+    title: "The scheduler picks a ready warp",
+    body: "W0 is eligible. Its token lights up in the scheduler, and its color marks the path through the hardware it is about to use.",
   },
   {
-    t: 12 / CYCLES_PER_SECOND,
+    t: at(FIRST_LOAD),
     id: "load",
     short: "ldmatrix",
-    title: "W0 carica A e B nei suoi registri",
-    body: "W0 emette ldmatrix in un ciclo. Poi aspetta: gli operandi sono pronti dopo 30 cicli di shared memory.",
+    title: "W0 loads A and B into its registers",
+    body: "Issuing ldmatrix takes one cycle. Then W0 has to wait: shared memory needs 30 cycles to deliver the operands.",
   },
   {
-    t: 20 / CYCLES_PER_SECOND,
+    t: at(20),
     id: "waiting",
-    short: "W0 attende",
-    title: "W0 aspetta, lo scheduler passa a W1",
-    body: "Lo scheduler non resta occupato. Otto cicli dopo l’issue di W0 emette il load di W1, mentre W0 è ancora in attesa.",
+    short: "W0 waits",
+    title: "W0 waits, so the scheduler moves on to W1",
+    body: "The scheduler never sits on a stalled warp. Eight cycles after W0's load it issues W1's, while W0 is still waiting.",
   },
   {
-    t: 42 / CYCLES_PER_SECOND,
+    t: at(42),
     id: "mma",
     short: "mma.sync",
-    title: "W0 emette mma.sync",
-    body: "Al ciclo 42 gli operandi di W0 sono pronti. Vanno al Tensor Core in un ciclo, restano fermi lì per 25 cicli di processing, e tornano nei registri in un altro ciclo.",
+    title: "W0 issues mma.sync",
+    body: "At cycle 42 W0's operands are ready. They reach its Tensor Core in one cycle, are processed for 25, and the result returns to the registers in one more.",
   },
   {
-    t: 50 / CYCLES_PER_SECOND,
+    t: at(50),
     id: "inflight",
-    short: "Warp in flight",
-    title: "Più warp avanzano sullo stesso hardware",
-    body: "I warp partono a 8 cicli di distanza, lo stesso scarto dei load. W0 è ancora nel Tensor Core quando W1 emette la sua MMA.",
+    short: "In flight",
+    title: "Many warps, one set of hardware",
+    body: "Warps start 8 cycles apart, so their waits overlap. W0 is still in its Tensor Core when W1 issues its MMA: every warp's latency hides behind another warp's work.",
   },
   {
-    t: 66 / CYCLES_PER_SECOND,
+    t: at(66),
     id: "accumulators",
-    short: "Accumulatori",
-    title: "I risultati parziali restano nei registri",
-    body: "Il contributo di ogni MMA aggiorna la zona C del register file. Gli accumulatori non tornano in shared memory a ogni iterazione.",
+    short: "Accumulate",
+    title: "Partial results stay in registers",
+    body: "Each MMA updates the warp's C accumulators in the register file. C does not go back to shared memory after every step.",
   },
   {
-    t: 156 / CYCLES_PER_SECOND,
+    t: at(END_K),
     id: "end-k",
-    short: "Fine K",
-    title: "Dopo K, i registri contengono C finale",
-    body: "I nuovi frammenti A/B hanno alimentato più MMA sugli stessi accumulatori. I tile C dei warp sono completi e indipendenti.",
+    short: "End of K",
+    title: "After K, the registers hold the final C",
+    body: "The timeline shows one K step per warp; the others repeat it into the same accumulators. Each warp's C tile is now complete and independent of the others.",
   },
   {
-    t: 160 / CYCLES_PER_SECOND,
+    t: at(WRITEBACK_START),
     id: "writeback",
-    short: "Writeback",
-    title: "C finale torna in shared memory",
-    body: "I frammenti 16×8 lasciano il register file. Due metà affiancate ricostruiscono un tile 16×16 nella shared memory.",
+    short: "Write back",
+    title: "C goes back to shared memory",
+    body: "The 16×8 fragments leave the register file two cycles apart. Pairs of them rebuild 16×16 tiles of C in shared memory.",
   },
 ];
-
-export function phaseAt(t: number): Phase {
-  let current = PHASES[0];
-  for (const phase of PHASES) if (t >= phase.t) current = phase;
-  return current;
-}
-
-export function clamp01(value: number): number {
-  return Math.min(1, Math.max(0, value));
-}
-
-export function smooth(value: number): number {
-  const x = clamp01(value);
-  return x * x * (3 - 2 * x);
-}
-
-export function ramp(t: number, start: number, end: number): number {
-  return smooth((t - start) / (end - start));
-}
-
-export function pulse(t: number, start: number, duration: number): number {
-  const x = (t - start) / duration;
-  return x > 0 && x < 1 ? Math.sin(x * Math.PI) ** 2 : 0;
-}

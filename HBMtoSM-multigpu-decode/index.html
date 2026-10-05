@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Eight GPU decode pipelines compute partial outputs, then sum them with a ring or tree all-reduce over PCIe." />
+    <title>Eight-GPU decode · all-reduce over PCIe</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
+    <meta name="color-scheme" content="dark" />
+    <style>html, body { background: #08090d; color: #edf2f7; }</style>
+    <link rel="stylesheet" href="/HBMtoSM-multigpu-decode/src/style.css" />
+  </head>
+  <body>
+    <main id="viewport" aria-label="Eight side-by-side GPU decode pipelines"></main>
+
+    <div id="hud">
+      <header class="topbar">
+        <div class="identity">
+          <p class="eyebrow">8-WAY TENSOR PARALLEL · DECODE · BF16</p>
+          <h1>Eight-GPU all-reduce</h1>
+          <div class="legend" aria-hidden="true">
+            <span><i class="swatch data"></i>input activation</span>
+            <span><i class="swatch weights"></i>weight shards</span>
+            <span><i class="swatch result"></i>partial / reduced output</span>
+          </div>
+        </div>
+        <div class="phase-copy" aria-live="polite">
+          <p class="eyebrow" id="phase-kicker">Setup</p>
+          <h2 id="phase-title">Each GPU selects its x slice and weight shard</h2>
+          <p id="phase-body"></p>
+        </div>
+      </header>
+
+      <section class="interconnect-control" aria-label="PCIe generation">
+        <p class="eyebrow">Inter-GPU link</p>
+        <div role="group" aria-label="Choose PCIe generation">
+          <button id="gen4" type="button" aria-pressed="true">PCIe 4.0 ×16</button>
+          <button id="gen5" type="button" aria-pressed="false">PCIe 5.0 ×16</button>
+        </div>
+        <p id="link-summary">28 GB/s effective · 3.0 μs path latency</p>
+      </section>
+
+      <section class="algorithm-control" aria-label="Choose all-reduce algorithm">
+        <p class="eyebrow">All-reduce algorithm</p>
+        <div role="group" aria-label="Choose ring or tree all-reduce">
+          <button id="algo-ring" type="button" aria-pressed="false">Ring <span>14 steps · 2 KiB slices</span></button>
+          <button id="algo-tree" type="button" aria-pressed="true">Tree <span>6 rounds · 16 KiB each</span></button>
+        </div>
+        <p id="algorithm-status">Latency-optimal · fewest sequential hops</p>
+      </section>
+
+      <aside class="traffic-card" aria-label="Current data movement">
+        <p class="eyebrow">Across PCIe now</p>
+        <strong id="traffic-title">Tree all-reduce · 16 KiB per GPU</strong>
+        <p id="traffic-detail">3 reduce rounds + 3 broadcast rounds</p>
+        <div class="compare">
+          <div class="compare-row" id="row-ring">
+            <span>Ring</span>
+            <div class="latency-bar" aria-hidden="true"><i id="ring-fixed"></i><b id="ring-wire"></b></div>
+            <output id="ring-time"></output>
+          </div>
+          <div class="compare-row" id="row-tree">
+            <span>Tree</span>
+            <div class="latency-bar" aria-hidden="true"><i id="tree-fixed"></i><b id="tree-wire"></b></div>
+            <output id="tree-time"></output>
+          </div>
+        </div>
+        <div class="latency-key"><span>fixed latency</span><span>bytes on wire</span></div>
+      </aside>
+
+      <footer class="transport">
+        <button id="play" type="button">Pause</button>
+        <button id="follow-camera" type="button" hidden>Follow camera</button>
+        <div class="timeline">
+          <div id="marks" class="marks"></div>
+          <input id="scrub" type="range" min="0" max="50" step="0.01" value="0" aria-label="Decode timeline" />
+        </div>
+        <output id="clock">0:00.0 / 0:50.0</output>
+      </footer>
+      <p class="hint">Space play · ← → scrub · drag to orbit · scroll to zoom</p>
+    </div>
+
+    <a class="back-link" href="/">← Main page</a>
+    <script type="module" src="/HBMtoSM-multigpu-decode/src/main.ts"></script>
+  </body>
+</html>

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="An interactive view of one GPU SM executing a memory-bound decode matrix-vector product."
+      content="An interactive, cycle-level view of one GPU SM executing a memory-bound FP32 decode matrix-vector product."
     />
     <title>Decode · Inside one SM</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -14,91 +14,58 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
+    <meta name="color-scheme" content="dark" />
+    <style>html, body { background: #07080b; color: #edf2f7; }</style>
+    <link rel="stylesheet" href="/src/sm-view.css" />
   </head>
   <body>
     <div id="viewport"></div>
     <div id="hud">
       <header class="top">
         <div class="identity">
-          <p class="eyebrow">Inside one active SM · decode</p>
-          <h1>x[1×256] × W[256×32] → y[1×32]</h1>
+          <p class="eyebrow">Inside one SM · decode · FP32</p>
+          <h1>x[1×256] · W[256×32] → y[1×32]</h1>
           <div class="legend" aria-label="Data colors">
-            <span><i class="swatch x"></i>x · data row</span>
-            <span><i class="swatch w"></i>W · weight panel</span>
-            <span><i class="swatch y"></i>y · output slice</span>
-            <span><i class="swatch active"></i>scheduled warp</span>
+            <span><i class="swatch x"></i>x · activations</span>
+            <span><i class="swatch w"></i>W · weights</span>
+            <span><i class="swatch y"></i>y · running sums</span>
+            <span><i class="swatch active"></i>issuing warp</span>
           </div>
         </div>
         <div class="phase-copy" aria-live="polite">
-          <p id="phase-kicker" class="eyebrow">Step 1 / 7</p>
+          <p id="phase-kicker" class="eyebrow">Step 1 / 9</p>
           <h2 id="phase-title"></h2>
           <p id="phase-body"></p>
         </div>
       </header>
 
-      <section class="pipeline" aria-label="Resident warp state">
-        <div class="panel-title">
-          <p class="eyebrow">Illustrative kernel mapping</p>
-          <strong>4 outputs / warp</strong>
-        </div>
-        <div class="pipeline-head"><span>Warp</span><span>Owns</span><span>Now</span></div>
-        <div id="warp-lanes"></div>
-        <p class="scheduler-note"><i></i><span id="scheduler-copy">Waiting for the panel</span></p>
-        <p class="pipeline-explainer">
-          <b>Shared:</b> every warp consumes the same x[K] chunk.<br />
-          <b>Different:</b> each warp reads its own W columns and updates its own y values.
-        </p>
-      </section>
 
-      <aside class="metrics" aria-label="Per-SM workload">
-        <p class="eyebrow">Per active SM</p>
-        <div><strong>33,920 B</strong><span>traffic</span></div>
-        <div><strong>16,384</strong><span>FLOPs</span></div>
-        <div><strong>0.48</strong><span>FLOP / byte</span></div>
-        <small>32 KB of the traffic is weights</small>
-      </aside>
-
-      <aside class="k-card" aria-label="K dimension progress">
-        <div class="panel-title">
-          <p class="eyebrow">Inner dimension</p>
-          <strong id="k-value">K 0 / 256</strong>
-        </div>
-        <div class="k-track"><i id="k-progress"></i></div>
-        <span id="k-note">K 0/256 · Tensor latency 8 cycles</span>
-      </aside>
-
-      <section class="chunk-timeline" aria-label="K chunk timeline">
+      <section class="card timeline" aria-label="Cycle timeline for this SM">
         <header>
-          <span>K accumulation inside this SM</span>
-          <strong id="chunk-readout">waiting</strong>
+          <p class="eyebrow">Cycle timeline · 8 warps</p>
+          <div class="chips" aria-hidden="true">
+            <span class="issue"><i></i>issue</span>
+            <span class="wait"><i></i>waiting on shared memory</span>
+            <span class="compute"><i></i>FFMA</span>
+            <span class="hold"><i></i>sums in registers</span>
+            <span class="result"><i></i>shuffle</span>
+            <span class="store"><i></i>store</span>
+          </div>
+          <span class="tl-summary">one K step per warp · each load feeds <b id="math-per-load">6 cycles</b> of FFMA</span>
         </header>
-        <div id="chunks" class="chunks"></div>
-        <p>Each chunk updates the same 32 register accumulators. The output slice is written only after K is complete.</p>
+        <div id="timeline"></div>
       </section>
-
-      <section class="assembly" aria-label="Output assembly across SMs">
-        <div>
-          <p class="eyebrow">Across 8 SMs</p>
-          <strong>Concatenate · do not reduce</strong>
-        </div>
-        <div id="sm-slices" class="sm-slices" aria-label="Eight adjacent output slices"></div>
-        <span>8 × 1×32 → y[1×256]</span>
-      </section>
-
-      <nav class="scene-nav" aria-label="Scene navigation">
-        <a href="/HBMtoSM-decode/">← HBM to SM · decode</a>
-        <a href="/SMtoResults/">Square GEMM →</a>
-      </nav>
 
       <footer class="transport">
+        <a class="home" href="/">← Main page</a>
         <button id="play" type="button">Play</button>
         <div class="scrub-wrap">
-          <div id="marks" class="marks"></div>
-          <input id="scrub" type="range" min="0" max="36" step="0.01" value="0" aria-label="Timeline" />
+          <div id="marks" class="marks even"></div>
+          <input id="scrub" type="range" min="0" max="42" step="0.01" value="0" aria-label="Timeline" />
         </div>
-        <span id="clock">0:00.0</span>
+        <span id="clock">cyc 000</span>
       </footer>
-      <p class="hint">Space play · ← → scrub · drag to orbit</p>
+      <p class="hint">Space play · ← → scrub · drag the timeline to seek · drag the scene to orbit · illustrative H100-class timing</p>
     </div>
     <script type="module" src="/SMtoResults-decode/src/main.ts"></script>
   </body>

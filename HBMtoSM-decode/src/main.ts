@@ -16,14 +16,12 @@ import {
 import {
   DURATION,
   PHASES,
-  REDUCE_START,
   sampleTimeline,
   workloadCaption,
-  type ReductionMode,
   type TimelineSample,
 } from "./model/timeline";
 import { createWorld, type PickHit } from "./scene/world";
-import "./style.css";
+import { HUD_FRAME_INTERVAL, MAX_PIXEL_RATIO, MIN_FRAME_INTERVAL } from "../../src/render-performance";
 
 const viewport = document.querySelector<HTMLDivElement>("#viewport");
 if (!viewport) throw new Error("missing viewport");
@@ -38,7 +36,7 @@ const renderer = new THREE.WebGLRenderer({
   powerPreference: "high-performance",
   stencil: false,
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.35));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO));
 renderer.setClearColor(0x08090d, 1);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -90,16 +88,12 @@ const inspectFacts = must<HTMLElement>("#inspect-facts");
 const inspectNote = must<HTMLElement>("#inspect-note");
 const inspectBack = must<HTMLButtonElement>("#inspect-back");
 const marks = must<HTMLElement>("#marks");
-const sequentialButton = must<HTMLButtonElement>("#reduce-sequential");
-const treeButton = must<HTMLButtonElement>("#reduce-tree");
-const reductionStatus = must<HTMLElement>("#reduction-status");
 
 eyebrow.textContent = workloadCaption();
 scrub.max = String(DURATION);
 
 let t = Number.isFinite(initialT) ? Math.min(DURATION, Math.max(0, initialT)) : 0;
 let playing = !reduceMotion && !params.has("t");
-let reductionMode: ReductionMode = params.get("reduction") === "tree" ? "tree" : "sequential";
 let mode: "timeline" | "free" | "inspect" = "timeline";
 let inspectTarget: PickHit | null = null;
 let snapInspect = false;
@@ -131,27 +125,6 @@ for (const phase of PHASES) {
   });
   marks.appendChild(button);
 }
-
-function chooseReduction(next: ReductionMode): void {
-  if (next === reductionMode) return;
-  reductionMode = next;
-  sequentialButton.setAttribute("aria-pressed", String(next === "sequential"));
-  treeButton.setAttribute("aria-pressed", String(next === "tree"));
-  const url = new URL(location.href);
-  url.searchParams.set("reduction", next);
-  history.replaceState(null, "", url);
-  if (t >= REDUCE_START) {
-    t = REDUCE_START;
-    mode = "timeline";
-    inspectTarget = null;
-    playing = !reduceMotion;
-  }
-}
-
-sequentialButton.addEventListener("click", () => chooseReduction("sequential"));
-treeButton.addEventListener("click", () => chooseReduction("tree"));
-sequentialButton.setAttribute("aria-pressed", String(reductionMode === "sequential"));
-treeButton.setAttribute("aria-pressed", String(reductionMode === "tree"));
 
 playButton.addEventListener("click", () => {
   if (t >= DURATION) t = 0;
@@ -275,21 +248,28 @@ window.addEventListener("resize", resize);
 resize();
 
 let last = performance.now();
+let lastFrame = 0;
+let lastHud = -Infinity;
 function frame(now: number): void {
+  requestAnimationFrame(frame);
+  if (document.hidden || now - lastFrame < MIN_FRAME_INTERVAL) return;
+  lastFrame = now;
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
-  if (playing && mode === "timeline" && !document.hidden) {
+  if (playing && mode === "timeline") {
     t = Math.min(DURATION, t + dt);
     if (t >= DURATION) playing = false;
   }
 
-  const sample = sampleTimeline(t, reductionMode);
+  const sample = sampleTimeline(t);
   world.update(sample, inspectTarget);
   applyCamera(sample, dt);
-  renderHud(sample);
+  if (now - lastHud >= HUD_FRAME_INTERVAL || scrubbing) {
+    renderHud(sample);
+    lastHud = now;
+  }
   renderer.render(scene, camera);
   labels.render(scene, camera);
-  requestAnimationFrame(frame);
 }
 
 function applyCamera(sample: TimelineSample, dt: number): void {
@@ -316,16 +296,13 @@ function renderHud(sample: TimelineSample): void {
   phaseKicker.textContent = sample.phase.short;
   phaseTitle.textContent = sample.phase.title;
   phaseBody.textContent = sample.phase.body;
-  reductionStatus.textContent = sample.phase.id === "reduce"
-    ? sample.reduction.status
-    : reductionMode === "sequential"
-      ? "7 dependent additions · N → N+1 → …"
-      : "3 parallel rounds · 8 → 4 → 2 → 1";
   playButton.textContent = t >= DURATION && !playing ? "Replay" : playing ? "Pause" : "Play";
   followButton.hidden = mode === "timeline";
   setText("#a-status", sample.meters.a);
   setText("#b-status", sample.meters.b);
   setText("#c-status", sample.meters.c);
+  setText("#gpu-clock", sample.gpu.label);
+  document.querySelector("#gpu-clock")?.classList.toggle("paused", !sample.gpu.running);
   setWidth("#a-bar", sample.meters.aBar);
   setWidth("#b-bar", sample.meters.bBar);
   setWidth("#c-bar", sample.meters.cBar);

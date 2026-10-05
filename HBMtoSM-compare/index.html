@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Prefill vs Decode</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <meta name="color-scheme" content="dark" />
+    <style>html, body { background: #08090d; color: #edf2f7; }</style>
+    <link rel="stylesheet" href="/HBMtoSM-compare/src/style.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div>
+        <p class="eyebrow" id="eyebrow">Same GPU · same clock</p>
+        <h1>Prefill vs decode</h1>
+      </div>
+      <p id="verdict" class="verdict"></p>
+    </header>
+
+    <main id="stage">
+      <section class="panel" id="panel-prefill"></section>
+      <section class="panel" id="panel-decode"></section>
+    </main>
+
+    <section class="gantt" aria-label="Cycle timeline">
+      <div class="gantt-head">
+        <span>GPU cycles</span>
+        <span class="key"><i class="mem"></i>memory / waiting <i class="sm"></i>SM busy <i class="math"></i>FP32 math</span>
+      </div>
+      <div class="lanes" id="lanes">
+        <div class="axis" id="axis"></div>
+        <div class="overlay"><div class="playhead" id="playhead"></div></div>
+      </div>
+    </section>
+
+    <footer class="transport">
+      <button id="play" type="button">Play</button>
+      <input id="scrub" type="range" min="0" max="20" step="0.01" value="0" aria-label="Timeline" />
+      <span id="clock">0 cycles</span>
+    </footer>
+    <a class="scene-switch" href="/">← Main page</a>
+    <script type="module" src="/HBMtoSM-compare/src/main.ts"></script>
+  </body>
+</html>

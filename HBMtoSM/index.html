@@ -10,6 +10,9 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
+    <meta name="color-scheme" content="dark" />
+    <style>html, body { background: #08090d; color: #edf2f7; }</style>
+    <link rel="stylesheet" href="/HBMtoSM/src/style.css" />
   </head>
   <body>
     <div id="viewport"></div>
@@ -49,6 +52,15 @@
           <b id="c-status"></b>
           <i><em id="c-bar"></em></i>
         </label>
+        <p class="gpu-clock"><span>GPU clock</span><b id="gpu-clock"></b></p>
+      </section>
+
+      <section class="intensity" aria-label="Arithmetic intensity summary">
+        <p class="eyebrow">Ideal lower bound</p>
+        <div><b>768 KB</b><span>memory traffic</span></div>
+        <div><b>33.6M</b><span>floating-point ops</span></div>
+        <strong>≈ 43 FLOP / byte</strong>
+        <small>Compute-bound</small>
       </section>
 
       <aside id="inspect" hidden>
@@ -71,8 +83,7 @@
       </footer>
       <p class="hint">Space play · ← → scrub · drag orbits · click an SM</p>
     </div>
-    <a class="scene-switch" href="/SMtoResults/">Next · inside one SM →</a>
-    <a class="scene-switch decode-switch" href="/HBMtoSM-decode/">Decode · una riga →</a>
+    <a class="scene-switch" href="/">← Main page</a>
     <script type="module" src="/HBMtoSM/src/main.ts"></script>
   </body>
 </html>

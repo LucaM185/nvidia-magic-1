@@ -170,9 +170,29 @@ html, body {
 .meter.b em { color: var(--b); }
 .meter.c em { color: var(--c); }
 
+.gpu-clock {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.gpu-clock span {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.gpu-clock b { font-weight: 400; color: var(--ink); }
+.gpu-clock b.paused { color: var(--muted); }
+
 .intensity {
   position: absolute;
-  top: 270px;
+  top: 284px;
   left: 26px;
   width: min(280px, 32vw);
   padding: 14px 15px;
@@ -221,52 +241,6 @@ html, body {
   font: 10px "IBM Plex Mono", ui-monospace, monospace;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-}
-
-.reduction-control {
-  pointer-events: auto;
-  position: absolute;
-  top: 68px;
-  left: 50%;
-  width: min(390px, calc(100vw - 40px));
-  transform: translateX(-50%);
-  text-align: center;
-}
-
-.reduction-control > div {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: rgba(8, 9, 13, 0.78);
-  backdrop-filter: blur(12px);
-}
-
-.reduction-control button {
-  min-height: 32px;
-  border: 0;
-  border-radius: 999px;
-  color: var(--muted);
-  background: transparent;
-  font: 500 12px "IBM Plex Mono", ui-monospace, monospace;
-  cursor: pointer;
-}
-
-.reduction-control button span { color: inherit; opacity: 0.72; }
-
-.reduction-control button[aria-pressed="true"] {
-  color: #eafff5;
-  background: rgba(61, 220, 151, 0.17);
-  box-shadow: inset 0 0 0 1px rgba(61, 220, 151, 0.34);
-}
-
-#reduction-status {
-  min-height: 16px;
-  margin: 6px 0 0;
-  color: var(--muted);
-  font: 11px "IBM Plex Mono", ui-monospace, monospace;
 }
 
 #inspect {
@@ -429,7 +403,7 @@ html, body {
 .tag.b { border-color: rgba(242, 162, 74, 0.5); }
 .tag.c { border-color: rgba(61, 220, 151, 0.45); }
 
-.tag.reduction-token {
+.tag.output-segment {
   min-width: 28px;
   padding: 5px 7px;
   text-align: center;
@@ -440,7 +414,7 @@ html, body {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
 }
 
-.tag.reduction-token b {
+.tag.output-segment b {
   font: 500 12px "IBM Plex Mono", ui-monospace, monospace;
   letter-spacing: 0.02em;
 }
@@ -461,9 +435,8 @@ html, body {
 .scene-switch {
   position: fixed;
   z-index: 8;
-  top: 24px;
-  left: 50%;
-  transform: translateX(-50%);
+  bottom: 16px;
+  left: 18px;
   padding: 8px 13px;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -475,7 +448,6 @@ html, body {
 }
 
 .scene-switch:hover { background: rgba(255, 255, 255, 0.09); }
-.decode-switch { top: 58px; }
 
 @media (max-width: 900px) {
   .top { flex-direction: column; gap: 12px; }
@@ -484,10 +456,4 @@ html, body {
   .intensity { display: none; }
   .marks { display: none; }
   #inspect { bottom: 96px; }
-  .reduction-control {
-    top: auto;
-    bottom: 84px;
-    width: min(360px, calc(100vw - 36px));
-  }
-  #reduction-status { display: none; }
 }

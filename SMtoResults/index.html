@@ -1,69 +1,66 @@
 <!doctype html>
-<html lang="it">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GEMM · Shared Memory → Tensor Core → Results</title>
+    <meta
+      name="description"
+      content="An interactive, cycle-level view of one GPU SM: twelve warps hide shared-memory latency behind each other while the Tensor Core accumulates C."
+    />
+    <title>Prefill · Inside one SM</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
+    <meta name="color-scheme" content="dark" />
+    <style>html, body { background: #07080b; color: #edf2f7; }</style>
+    <link rel="stylesheet" href="/src/sm-view.css" />
   </head>
   <body>
     <div id="viewport"></div>
     <div id="hud">
       <header class="top">
         <div class="identity">
-          <p class="eyebrow">Dentro un singolo SM</p>
-          <h1>Shared Memory → Results</h1>
-          <div class="legend" aria-hidden="true">
-            <span><i class="swatch a"></i>A</span>
-            <span><i class="swatch b"></i>B</span>
-            <span><i class="swatch c"></i>C</span>
-            <span><i class="swatch active"></i>warp attivo</span>
+          <p class="eyebrow">Inside one SM · prefill · Tensor Core</p>
+          <h1>Shared memory → Tensor Core → C</h1>
+          <div class="legend" aria-label="Data colors">
+            <span><i class="swatch x"></i>A · operand</span>
+            <span><i class="swatch w"></i>B · operand</span>
+            <span><i class="swatch y"></i>C · accumulators</span>
+            <span><i class="swatch active"></i>issuing warp</span>
           </div>
         </div>
-        <div class="phase-copy">
-          <p id="phase-kicker" class="eyebrow">STEP 1 / 7</p>
+        <div class="phase-copy" aria-live="polite">
+          <p id="phase-kicker" class="eyebrow">Step 1 / 10</p>
           <h2 id="phase-title"></h2>
           <p id="phase-body"></p>
         </div>
       </header>
 
-      <section class="pipeline" aria-label="Stato software dei warp">
-        <div class="pipeline-title">
-          <p class="eyebrow">Software state · non hardware</p>
-          <strong>Resident warps</strong>
-        </div>
-        <div class="pipeline-head"><span>Warp</span><span>Stato</span><span>Operazione</span></div>
-        <div id="warp-lanes"></div>
-        <p class="scheduler-note"><i></i><span id="scheduler-copy">Lo scheduler alterna warp indipendenti</span></p>
+      <section class="card timeline" aria-label="Cycle timeline for this SM">
+        <header>
+          <p class="eyebrow">Cycle timeline · 12 warps</p>
+          <div class="chips" aria-hidden="true">
+            <span class="issue"><i></i>issue</span>
+            <span class="wait"><i></i>waiting on shared memory</span>
+            <span class="compute"><i></i>Tensor Core</span>
+            <span class="hold"><i></i>C in registers</span>
+            <span class="store"><i></i>write back</span>
+          </div>
+          <span class="tl-summary">one K step per warp · each load feeds <b id="math-per-load">25 cycles</b> of Tensor Core math</span>
+        </header>
+        <div id="timeline"></div>
       </section>
-
-      <aside class="k-card">
-        <p class="eyebrow">Timing model</p>
-        <strong id="k-value">cycle 0 / 190</strong>
-        <div class="k-track"><i id="k-progress"></i></div>
-        <span id="k-note">issue 1 cyc · attesa shared 30 · warp ogni 8 · andata 1 · TC 25 · ritorno 1</span>
-      </aside>
-
-      <section class="cycle-timeline" aria-label="Timeline hardware per warp">
-        <header><span>Cycle timeline</span><strong id="cycle-readout">cycle 0</strong></header>
-        <div id="cycle-scale" class="cycle-scale"></div>
-        <div id="cycle-rows" class="cycle-rows"></div>
-        <i id="cycle-playhead" class="cycle-playhead"></i>
-      </section>
-
-      <a class="scene-switch" href="/HBMtoSM/">← HBM to SM</a>
 
       <footer class="transport">
+        <a class="home" href="/">← Main page</a>
         <button id="play" type="button">Play</button>
         <div class="scrub-wrap">
-          <div id="marks" class="marks"></div>
+          <div id="marks" class="marks even"></div>
           <input id="scrub" type="range" min="0" max="64" step="0.01" value="0" aria-label="Timeline" />
         </div>
-        <span id="clock">0:00.0</span>
+        <span id="clock">cyc 000</span>
       </footer>
-      <p class="hint">Space play · ← → scrub · drag orbits</p>
+      <p class="hint">Space play · ← → scrub · drag the timeline to seek · drag the scene to orbit</p>
     </div>
     <script type="module" src="/SMtoResults/src/main.ts"></script>
   </body>

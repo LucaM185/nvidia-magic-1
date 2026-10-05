@@ -10,6 +10,9 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
+    <meta name="color-scheme" content="dark" />
+    <style>html, body { background: #08090d; color: #edf2f7; }</style>
+    <link rel="stylesheet" href="/HBMtoSM-decode/src/style.css" />
   </head>
   <body>
     <div id="viewport"></div>
@@ -49,6 +52,7 @@
           <b id="c-status"></b>
           <i><em id="c-bar"></em></i>
         </label>
+        <p class="gpu-clock"><span>GPU clock</span><b id="gpu-clock"></b></p>
       </section>
 
       <section class="intensity" aria-label="Arithmetic intensity summary">
@@ -56,20 +60,7 @@
         <div><b>258 KB</b><span>memory traffic</span></div>
         <div><b>131k</b><span>floating-point ops</span></div>
         <strong>≈ 0.5 FLOP / byte</strong>
-        <small>Bandwidth-bound</small>
-      </section>
-
-      <section class="reduction-control" aria-label="Accumulation strategy">
-        <p class="eyebrow">After the SMs finish</p>
-        <div role="group" aria-label="Choose accumulation strategy">
-          <button id="reduce-sequential" type="button" aria-pressed="true">
-            Sequential <span>O(N)</span>
-          </button>
-          <button id="reduce-tree" type="button" aria-pressed="false">
-            Tree <span>O(log N)</span>
-          </button>
-        </div>
-        <p id="reduction-status">7 dependent additions</p>
+        <small>Memory-bound</small>
       </section>
 
       <aside id="inspect" hidden>
@@ -92,8 +83,7 @@
       </footer>
       <p class="hint">Space play · ← → scrub · drag orbits · click an SM</p>
     </div>
-    <a class="scene-switch" href="/HBMtoSM/">← Square GEMM</a>
-    <a class="scene-switch decode-switch" href="/SMtoResults-decode/">Inside one decode SM →</a>
+    <a class="scene-switch" href="/">← Main page</a>
     <script type="module" src="/HBMtoSM-decode/src/main.ts"></script>
   </body>
 </html>
