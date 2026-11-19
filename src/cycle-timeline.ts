@@ -28,11 +28,19 @@ export interface RowState {
   text: string;
   /** Highlights the row, e.g. the warp the scheduler is issuing for. */
   active?: boolean;
+  /** Fades the row, e.g. a warp the current step is not about. */
+  dim?: boolean;
 }
 
 export interface TimelineSpec {
   totalCycles: number;
   ticks: number[];
+  /**
+   * Piecewise-linear axis: each [cycle, share] puts that cycle at that fraction
+   * of the width, so long waits or fast-forwarded stretches take less room.
+   * Dashed seams mark where the scale changes.
+   */
+  squeeze?: Array<[cycle: number, share: number]>;
   hardware: Row[];
   warps: Row[];
   onSeek?: (cycle: number) => void;
@@ -64,7 +72,20 @@ interface LiveSegment {
 }
 
 export function createCycleTimeline(root: HTMLElement, spec: TimelineSpec): CycleTimeline {
-  const percent = (cycle: number) => `${(cycle / spec.totalCycles) * 100}%`;
+  const seams = spec.squeeze ?? [];
+  const knots: Array<[number, number]> = [[0, 0], ...seams, [spec.totalCycles, 1]];
+  /** Interpolates along the knots from column `from` to column `to`. */
+  const along = (value: number, from: 0 | 1, to: 0 | 1) => {
+    for (let i = 1; i < knots.length; i++) {
+      const [a, b] = [knots[i - 1], knots[i]];
+      if (value <= b[from] || i === knots.length - 1) return a[to] + ((value - a[from]) / (b[from] - a[from])) * (b[to] - a[to]);
+    }
+    return value;
+  };
+  /** Horizontal position of a cycle, 0 → 1. */
+  const xOf = (cycle: number) => along(cycle, 0, 1);
+  const cycleOf = (x: number) => along(x, 1, 0);
+  const percent = (cycle: number) => `${xOf(cycle) * 100}%`;
   const segments: LiveSegment[] = [];
   const rowNodes: HTMLElement[] = [];
   const stateNodes: HTMLElement[] = [];
@@ -75,6 +96,12 @@ export function createCycleTimeline(root: HTMLElement, spec: TimelineSpec): Cycl
   for (const tick of spec.ticks) {
     const line = document.createElement("i");
     line.style.left = percent(tick);
+    grid.append(line);
+  }
+  for (const [cycle] of seams) {
+    const line = document.createElement("i");
+    line.style.left = percent(cycle);
+    line.className = "break";
     grid.append(line);
   }
   root.append(grid);
@@ -106,7 +133,7 @@ export function createCycleTimeline(root: HTMLElement, spec: TimelineSpec): Cycl
       const bar = document.createElement("i");
       bar.className = `tl-seg ${segment.kind}`;
       bar.style.left = percent(segment.start);
-      bar.style.width = percent(segment.end - segment.start);
+      bar.style.width = `${(xOf(segment.end) - xOf(segment.start)) * 100}%`;
       if (segment.color) bar.style.setProperty("--c", segment.color);
       const cycles = segment.end - segment.start;
       bar.title = `${row.name} · ${segment.label || KIND_TEXT[segment.kind]} · cycles ${segment.start}–${segment.end} (${cycles})`;
@@ -152,7 +179,7 @@ export function createCycleTimeline(root: HTMLElement, spec: TimelineSpec): Cycl
     const seek = (event: PointerEvent) => {
       const track = root.querySelector<HTMLElement>(".tl-track")!.getBoundingClientRect();
       const u = Math.min(1, Math.max(0, (event.clientX - track.left) / track.width));
-      spec.onSeek?.(u * spec.totalCycles);
+      spec.onSeek?.(cycleOf(u));
     };
     root.addEventListener("pointerdown", (event) => {
       const track = root.querySelector<HTMLElement>(".tl-track")!.getBoundingClientRect();
@@ -191,13 +218,14 @@ export function createCycleTimeline(root: HTMLElement, spec: TimelineSpec): Cycl
           segment.element.classList.toggle("now", now);
         }
       }
-      root.style.setProperty("--p", String(c / spec.totalCycles));
-      playhead.classList.toggle("flip", c / spec.totalCycles > 0.88);
+      root.style.setProperty("--p", String(xOf(c)));
+      playhead.classList.toggle("flip", xOf(c) > 0.88);
       const text = `cycle ${Math.floor(c)}`;
       if (text !== lastReadout) readout.textContent = lastReadout = text;
       states.forEach((state, index) => {
         if (stateNodes[index].textContent !== state.text) stateNodes[index].textContent = state.text;
         rowNodes[index].classList.toggle("active", Boolean(state.active));
+        rowNodes[index].classList.toggle("dim", Boolean(state.dim));
       });
     },
   };

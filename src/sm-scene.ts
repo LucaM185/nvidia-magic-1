@@ -57,10 +57,21 @@ const LANE_X1 = EXEC_X1 - 1.05;
 const TC_X = EXEC_X1 - 0.55;
 const STRIP_H = 0.02;
 
-const FLOOR_X0 = -6.7;
+const FLOOR_X0 = -8.6;
+
+/** The TMA sits left of shared memory; the L2 link climbs over the floor's back edge into it. */
+const TMA_X = -7.45;
+const TMA_Z = -2.0;
 const FLOOR_X1 = 7.3;
 const FLOOR_Z0 = -4.0;
 const FLOOR_Z1 = 3.9;
+
+const LINK = [
+  new THREE.Vector3(TMA_X, -0.6, FLOOR_Z0 - 0.7),
+  new THREE.Vector3(TMA_X, -0.1, FLOOR_Z0 - 0.25),
+  new THREE.Vector3(TMA_X, 0.3, FLOOR_Z0 + 0.4),
+  new THREE.Vector3(TMA_X, 0.36, TMA_Z - 0.64),
+];
 
 /* ------------------------------------------------------------- materials */
 
@@ -194,7 +205,8 @@ export function arc(from: THREE.Vector3, to: THREE.Vector3, lift: number): THREE
 /* ------------------------------------------------------------ silkscreen */
 
 const engravings: Array<() => void> = [];
-const PX = 150;
+/** Silkscreen texels per world unit: sharp at Retina density when zoomed in. */
+const PX = 360;
 
 function engrave(
   parent: THREE.Object3D,
@@ -273,14 +285,23 @@ export interface Label {
 
 /** A name tag hanging below (or, with `above`, standing over) a block. It steps aside during `hiddenIn`. */
 export function tag(parent: THREE.Object3D, html: string, position: THREE.Vector3, tone: string, above = false, hiddenIn: string[] = []): Label {
+  return placeTag(parent, html, position, tone, 0.5, above ? 1 : 0, hiddenIn);
+}
+
+function placeTag(parent: THREE.Object3D, html: string, position: THREE.Vector3, tone: string, cx: number, cy: number, hiddenIn: string[]): Label {
   const element = document.createElement("div");
   element.className = `tag ${tone}`;
   element.innerHTML = html;
   const object = new CSS2DObject(element);
   object.position.copy(position);
-  object.center.set(0.5, above ? 1 : 0);
+  object.center.set(cx, cy);
   parent.add(object);
   return { element, phases: hiddenIn };
+}
+
+/** A tag beside its anchor instead of below it, e.g. naming a column from its left. */
+export function sideTag(parent: THREE.Object3D, html: string, position: THREE.Vector3, tone: string, side: "left" | "right", hiddenIn: string[] = []): Label {
+  return placeTag(parent, html, position, tone, side === "left" ? 1 : 0, 0.5, hiddenIn);
 }
 
 /** A note with a leader line that only shows during `phases`. */
@@ -300,6 +321,42 @@ export function showLabels(tags: Label[], callouts: Label[], phase: string): voi
   for (const item of tags) item.element.classList.toggle("aside", item.phases.includes(phase));
 }
 
+/* ------------------------------------------------------------ L2 copies */
+
+/** One shared-memory cell the TMA fills: it streams in over [land - span, land]. */
+export interface CopyCell {
+  target: THREE.Vector3;
+  color: THREE.Color;
+  land: number;
+  span: number;
+}
+
+const REQUEST = new THREE.Color("#dfe7f2");
+/** Cycles a bead takes from L2 to its cell; it arrives as the cell finishes filling. */
+const TRAVEL = 70;
+
+/**
+ * The TMA's side of a copy: the request leaving at cycle 0, the link glowing
+ * while bytes are in flight, and one bead per cell arriving as it fills.
+ * Call between beads.begin() and beads.end().
+ */
+export function animateCopy(hw: SmHardware, cycle: number, cells: CopyCell[], curves: THREE.Curve<THREE.Vector3>[]): void {
+  const last = Math.max(...cells.map((cell) => cell.land));
+  const inFlight = cycle > 0 && cycle < last;
+  hw.tma.emissiveIntensity = inFlight ? 0.12 : 0.02;
+  hw.link.opacity = inFlight ? 0.3 : 0.08;
+  if (cycle <= 0) return;
+  for (let request = 0; request < 3; request++) hw.beads.trail(hw.requestPath, (cycle - request * 4) / 90, REQUEST, 0.7, 0.55);
+  cells.forEach((cell, index) => {
+    hw.beads.trail(curves[index], (cycle - (cell.land - TRAVEL)) / TRAVEL, cell.color, 0.75, 0.8);
+  });
+}
+
+/** How full a copied cell is at `cycle`, 0 → 1. */
+export function filled(cycle: number, cell: CopyCell): number {
+  return Math.min(1, Math.max(0, (cycle - (cell.land - cell.span)) / cell.span));
+}
+
 /* -------------------------------------------------------------- hardware */
 
 export interface SharedGroup {
@@ -314,10 +371,28 @@ export interface OperandGroup {
   count: number;
 }
 
+/**
+ * Draw shared memory as a vector-matrix product instead of stacked rows:
+ * [input vector, matrix, output vector]. The input runs down the left beside
+ * the matrix rows it multiplies, the output along the front under the columns
+ * it sums. `rows` and `cols` engrave index labels; `colColors` tints them.
+ * With `groupCols`, columns come in groups of that size, set apart by a small
+ * gap, and `cols` / `colColors` label whole groups.
+ */
+export interface MatVecLayout {
+  rows: string[];
+  cols: string[];
+  colColors?: THREE.Color[];
+  groupCols?: number;
+}
+
 export interface SmSpec {
   warps: number;
   /** Shared-memory contents, back to front. */
   shared: SharedGroup[];
+  matvec?: MatVecLayout;
+  /** Engraved name of each register-file band (default W0, W1, …). */
+  warpLabel?: (warp: number) => string;
   /** Operand registers in each warp's band, left to right; accumulators follow. */
   operands: OperandGroup[];
   accumulators: number;
@@ -339,9 +414,17 @@ export interface SmHardware {
   lanes: Cells[];
   tensor: THREE.MeshStandardMaterial[];
   beads: Beads;
+  tma: THREE.MeshStandardMaterial;
+  /** The glowing core of the L2 link. */
+  link: THREE.MeshBasicMaterial;
+  /** Request path TMA → L2, and the path data takes from L2 to a shared-memory cell. */
+  requestPath: THREE.Curve<THREE.Vector3>;
+  inbound: (target: THREE.Vector3) => THREE.Curve<THREE.Vector3>;
   at: {
     sharedX: number;
     registerX: number;
+    tmaX: number;
+    tmaZ: number;
     /** Middle of the FP32 lanes, and the column of Tensor Cores at the end of each strip. */
     lanesX: number;
     tensorX: number;
@@ -360,6 +443,71 @@ export interface SmHardware {
 }
 
 export const subpartitionOf = (warp: number) => warp % SUBPARTITIONS;
+
+interface SharedCells {
+  shared: Cells[];
+  /** Row centers per group, for labels and callouts. */
+  groupRowZ: number[][];
+}
+
+/** Groups stacked back to front, one engraved letter each. */
+function stackedShared(scene: THREE.Scene, groups: SharedGroup[]): SharedCells {
+  const totalRows = groups.reduce((sum, group) => sum + group.rows, 0);
+  const rowPitch = (SMEM_Z1 - SMEM_Z0 - GROUP_GAP * (groups.length - 1)) / totalRows;
+  const groupRowZ: number[][] = [];
+  let z = SMEM_Z0 + rowPitch / 2;
+  const shared = groups.map((group) => {
+    const rows = Array.from({ length: group.rows }, (_, index) => z + index * rowPitch);
+    groupRowZ.push(rows);
+    z += group.rows * rowPitch + GROUP_GAP;
+    const hex = group.color.getHexString();
+    engrave(scene, [group.letter], 0.4, 0.4, SHARED_X - 1.24, BASE_H, (rows[0] + rows[rows.length - 1]) / 2, { size: 0.24, align: "center", color: `#${hex}` });
+    const pitch = (SMEM_X1 - SMEM_X0) / Math.max(...groups.map((item) => item.cols));
+    const width = pitch * group.cols;
+    const x0 = (SMEM_X0 + SMEM_X1) / 2 - width / 2;
+    const positions = rows.flatMap((rowZ) => row(group.cols, x0, x0 + width, BASE_H, rowZ));
+    return new Cells(scene, positions, new THREE.Vector3(pitch * 0.8, 0.22, Math.min(0.38, rowPitch * 0.78)), 0.03);
+  });
+  return { shared, groupRowZ };
+}
+
+/** Matrix rows and their row labels, the input vector as a column beside them, the output vector under the columns. */
+const MV_KEY_X = SMEM_X0 - 0.32;
+const MV_VEC_X = SMEM_X0 + 0.08;
+const MV_MAT_X0 = SMEM_X0 + 0.36;
+const MV_HEAD_Z = SMEM_Z0 + 0.06;
+const MV_ROWS_Z0 = SMEM_Z0 + 0.3;
+const MV_ROWS_Z1 = SMEM_Z1 - 0.72;
+const MV_OUT_Z = SMEM_Z1 - 0.3;
+
+function matvecShared(scene: THREE.Scene, groups: SharedGroup[], layout: MatVecLayout): SharedCells {
+  const [input, matrix, output] = groups;
+  const rowPitch = (MV_ROWS_Z1 - MV_ROWS_Z0) / matrix.rows;
+  const rowZ = Array.from({ length: matrix.rows }, (_, r) => MV_ROWS_Z0 + (r + 0.5) * rowPitch);
+  const group = layout.groupCols ?? 1;
+  const groupCount = matrix.cols / group;
+  const groupGap = group > 1 ? 0.06 : 0;
+  const colPitch = (SMEM_X1 - MV_MAT_X0 - groupGap * (groupCount - 1)) / matrix.cols;
+  const colX = Array.from({ length: matrix.cols }, (_, c) => MV_MAT_X0 + (c + 0.5) * colPitch + Math.floor(c / group) * groupGap);
+  const depth = rowPitch * 0.78;
+  const width = colPitch * (group > 1 ? 0.78 : 0.8);
+  const thin = Math.min(0.03, width / 2 - 0.004);
+  const shared = [
+    new Cells(scene, rowZ.map((z) => new THREE.Vector3(MV_VEC_X, BASE_H, z)), new THREE.Vector3(group > 1 ? 0.12 : 0.26, 0.22, depth), 0.03),
+    new Cells(scene, rowZ.flatMap((z) => colX.map((x) => new THREE.Vector3(x, BASE_H, z))), new THREE.Vector3(width, 0.22, depth), thin),
+    new Cells(scene, colX.map((x) => new THREE.Vector3(x, BASE_H, MV_OUT_Z)), new THREE.Vector3(group > 1 ? width * 0.4 : width, 0.22, 0.34), group > 1 ? 0.01 : thin),
+  ];
+  const ink = "rgba(186, 198, 214, .7)";
+  layout.rows.forEach((text, r) => engrave(scene, [text], 0.46, 0.3, MV_KEY_X, BASE_H, rowZ[r], { size: 0.11, align: "right", color: ink }));
+  layout.cols.forEach((text, g) => {
+    const color = layout.colColors?.[g];
+    const x = (colX[g * group] + colX[(g + 1) * group - 1]) / 2;
+    engrave(scene, [text], colPitch * group + 0.1, 0.24, x, BASE_H, MV_HEAD_Z, { size: 0.1, align: "center", color: color ? `#${color.getHexString()}` : ink });
+  });
+  engrave(scene, [input.letter], 0.3, 0.24, MV_VEC_X, BASE_H, MV_HEAD_Z, { size: 0.17, align: "center", color: `#${input.color.getHexString()}` });
+  engrave(scene, [output.letter], 0.3, 0.3, MV_VEC_X, BASE_H, MV_OUT_Z, { size: 0.17, align: "center", color: `#${output.color.getHexString()}` });
+  return { shared, groupRowZ: [rowZ, rowZ, [MV_OUT_Z]] };
+}
 
 export function createSmHardware(spec: SmSpec): SmHardware {
   const scene = new THREE.Scene();
@@ -400,22 +548,28 @@ export function createSmHardware(spec: SmSpec): SmHardware {
   /* ---------------------------------------------------- shared memory */
 
   block(scene, SHARED_W, BASE_H, BLOCK_D, SHARED_X, BLOCK_Z, plate, 0, 0.1);
-  const totalRows = spec.shared.reduce((sum, group) => sum + group.rows, 0);
-  const rowPitch = (SMEM_Z1 - SMEM_Z0 - GROUP_GAP * (spec.shared.length - 1)) / totalRows;
-  const groupRowZ: number[][] = [];
-  let z = SMEM_Z0 + rowPitch / 2;
-  const shared = spec.shared.map((group) => {
-    const rows = Array.from({ length: group.rows }, (_, index) => z + index * rowPitch);
-    groupRowZ.push(rows);
-    z += group.rows * rowPitch + GROUP_GAP;
-    const hex = group.color.getHexString();
-    engrave(scene, [group.letter], 0.4, 0.4, SHARED_X - 1.24, BASE_H, (rows[0] + rows[rows.length - 1]) / 2, { size: 0.24, align: "center", color: `#${hex}` });
-    const pitch = (SMEM_X1 - SMEM_X0) / Math.max(...spec.shared.map((item) => item.cols));
-    const width = pitch * group.cols;
-    const x0 = (SMEM_X0 + SMEM_X1) / 2 - width / 2;
-    const positions = rows.flatMap((rowZ) => row(group.cols, x0, x0 + width, BASE_H, rowZ));
-    return new Cells(scene, positions, new THREE.Vector3(pitch * 0.8, 0.22, Math.min(0.38, rowPitch * 0.78)), 0.03);
-  });
+
+  // TMA and the L2 link that feeds shared memory.
+  const tma = new THREE.MeshStandardMaterial({ color: 0x262f3b, roughness: 0.4, metalness: 0.6, emissive: W, emissiveIntensity: 0 });
+  block(scene, 1.1, 0.46, 1.25, TMA_X, TMA_Z, tma, 0, 0.1);
+  engrave(scene, ["TMA"], 1.0, 0.4, TMA_X, 0.46, TMA_Z, { size: 0.24, align: "center", color: "rgba(214, 222, 234, .75)" });
+  const pipeCurve = new THREE.CatmullRomCurve3([...LINK, new THREE.Vector3(TMA_X, 0.3, TMA_Z)], false, "centripetal");
+  scene.add(new THREE.Mesh(
+    new THREE.TubeGeometry(pipeCurve, 32, 0.2, 18, false),
+    new THREE.MeshStandardMaterial({ color: 0x1b2129, roughness: 0.25, metalness: 0.4, transparent: true, opacity: 0.55 }),
+  ));
+  const link = new THREE.MeshBasicMaterial({ color: W, transparent: true, opacity: 0.08, toneMapped: false });
+  scene.add(new THREE.Mesh(new THREE.TubeGeometry(pipeCurve, 32, 0.05, 8, false), link));
+  engrave(scene, ["↕ L2"], 1.2, 0.4, TMA_X + 1.0, -0.22, FLOOR_Z0 - 0.35, { size: 0.24, color: "rgba(170, 182, 198, .65)" });
+  const requestPath = new THREE.CatmullRomCurve3([new THREE.Vector3(TMA_X, 0.62, TMA_Z), ...[...LINK].reverse()], false, "centripetal");
+  const inbound = (target: THREE.Vector3) => new THREE.CatmullRomCurve3([
+    ...LINK,
+    new THREE.Vector3(TMA_X, 0.66, TMA_Z),
+    new THREE.Vector3(SHARED_X - 1.75, 0.7, target.z),
+    new THREE.Vector3(target.x - 0.25, 0.62, target.z),
+    target,
+  ], false, "centripetal");
+  const { shared, groupRowZ } = spec.matvec ? matvecShared(scene, spec.shared, spec.matvec) : stackedShared(scene, spec.shared);
 
   /* -------------------------------------------------- register file */
 
@@ -445,7 +599,9 @@ export function createSmHardware(spec: SmSpec): SmHardware {
     0.03,
   );
   for (let warp = 0; warp < spec.warps; warp++) {
-    engrave(scene, [`W${warp}`], 0.5, 0.3, RF_X - 1.6, BASE_H, bandZ(warp), { size: spec.warps > 8 ? 0.13 : 0.15, align: "right", color: `#${WARP_COLORS[warp].getHexString()}` });
+    const name = spec.warpLabel?.(warp) ?? `W${warp}`;
+    const size = name.length > 3 ? 0.105 : spec.warps > 8 ? 0.13 : 0.15;
+    engrave(scene, [name], 0.5, 0.3, RF_X - 1.6, BASE_H, bandZ(warp), { size, align: "right", color: `#${WARP_COLORS[warp].getHexString()}` });
   }
 
   // Scheduler: one column of warp tokens per sub-partition.
@@ -500,10 +656,16 @@ export function createSmHardware(spec: SmSpec): SmHardware {
     scheduler,
     lanes,
     tensor,
-    beads: new Beads(scene, 240),
+    beads: new Beads(scene, 320),
+    tma,
+    link,
+    requestPath,
+    inbound,
     at: {
       sharedX: SHARED_X,
       registerX: RF_X,
+      tmaX: TMA_X,
+      tmaZ: TMA_Z,
       lanesX: (LANE_X0 + LANE_X1) / 2,
       tensorX: TC_X,
       front: Z1 + 0.12,

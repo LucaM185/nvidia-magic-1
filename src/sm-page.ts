@@ -9,14 +9,14 @@ import { CSS2DRenderer } from "three/addons/renderers/CSS2DRenderer.js";
 import { createCycleTimeline, type RowState, type TimelineSpec } from "./cycle-timeline";
 import { fitCamera } from "./fit-camera";
 import { redrawEngravings } from "./sm-scene";
-import { CYCLES_PER_SECOND } from "./sm-timing";
+import type { Playback } from "./sm-timing";
 import { HUD_FRAME_INTERVAL, MAX_PIXEL_RATIO, MIN_FRAME_INTERVAL } from "./render-performance";
 
 /*
  * Everything the two "inside one SM" pages share around their scene:
  * renderer, camera framing, phase copy, transport, cycle timeline and loop.
- * Time t runs at CYCLES_PER_SECOND until `totalCycles`; a page may add
- * narration after the kernel (the clock then holds at its last cycle).
+ * `playback` maps time to cycles; a page may add narration after the kernel
+ * (the clock then holds at its last cycle).
  */
 
 export interface PagePhase {
@@ -33,13 +33,12 @@ export interface SmPageSpec {
   center: THREE.Vector3;
   update(t: number, cycle: number, phase: PagePhase): void;
   phases: PagePhase[];
+  playback: Playback;
   duration: number;
   totalCycles: number;
   timeline: Omit<TimelineSpec, "onSeek" | "totalCycles">;
-  rowStates(cycle: number): RowState[];
+  rowStates(cycle: number, phase: PagePhase): RowState[];
 }
-
-export const cycleAt = (t: number, totalCycles: number) => Math.min(totalCycles, Math.max(0, t * CYCLES_PER_SECOND));
 
 export function phaseAt(phases: PagePhase[], t: number): PagePhase {
   let current = phases[0];
@@ -95,6 +94,7 @@ export function runSmPage(spec: SmPageSpec): void {
   const phaseTitle = must<HTMLElement>("#phase-title");
   const phaseBody = must<HTMLElement>("#phase-body");
   const marks = must<HTMLElement>("#marks");
+  const phaseCopy = must<HTMLElement>(".phase-copy");
 
   const params = new URLSearchParams(location.search);
   const initial = Number(params.get("t"));
@@ -118,7 +118,7 @@ export function runSmPage(spec: SmPageSpec): void {
     ...spec.timeline,
     totalCycles: spec.totalCycles,
     onSeek: (cycle) => {
-      t = cycle / CYCLES_PER_SECOND;
+      t = spec.playback.timeAt(cycle);
       playing = false;
     },
   });
@@ -141,7 +141,7 @@ export function runSmPage(spec: SmPageSpec): void {
       togglePlay();
     } else if (event.code === "ArrowLeft" || event.code === "ArrowRight") {
       event.preventDefault();
-      const step = (event.shiftKey ? 3 : 1) / CYCLES_PER_SECOND;
+      const step = event.shiftKey ? 1 : 1 / 3;
       t = Math.min(spec.duration, Math.max(0, t + (event.code === "ArrowLeft" ? -step : step)));
       playing = false;
     }
@@ -161,7 +161,7 @@ export function runSmPage(spec: SmPageSpec): void {
     marks.querySelectorAll("button").forEach((button, index) => {
       button.setAttribute("aria-current", index === phaseIndex ? "true" : "false");
     });
-    timeline.update(cycle, spec.rowStates(cycle));
+    timeline.update(cycle, spec.rowStates(cycle, phase));
   }
 
   /** Frame the SM inside the area between the header and the cycle timeline. */
@@ -179,6 +179,27 @@ export function runSmPage(spec: SmPageSpec): void {
   window.addEventListener("resize", resize);
   resize();
 
+  /**
+   * Callouts stand above the scene, so zooming or orbiting can push one into
+   * the step text. Slide it left until it clears, and angle its leader back
+   * to the point it marks.
+   */
+  function clearStepText(): void {
+    const text = phaseCopy.getBoundingClientRect();
+    for (const element of labelRenderer.domElement.querySelectorAll<HTMLElement>(".callout.on")) {
+      const shift = Number(element.dataset.shift ?? 0);
+      const box = element.getBoundingClientRect();
+      const right = box.right + shift;
+      const overlaps = box.top < text.bottom && box.bottom > text.top && right > text.left;
+      const next = overlaps ? Math.round(right - text.left + 12) : 0;
+      if (next === shift) continue;
+      element.dataset.shift = String(next);
+      element.style.translate = next ? `${-next}px 0` : "";
+      element.style.setProperty("--lead-len", `${Math.hypot(next, 25)}px`);
+      element.style.setProperty("--lead-turn", `${-Math.atan2(next, 25)}rad`);
+    }
+  }
+
   let last = performance.now();
   let lastFrame = 0;
   let lastHud = -Infinity;
@@ -192,7 +213,7 @@ export function runSmPage(spec: SmPageSpec): void {
       t = Math.min(spec.duration, t + dt);
       if (t >= spec.duration) playing = false;
     }
-    const cycle = cycleAt(t, spec.totalCycles);
+    const cycle = Math.min(spec.totalCycles, spec.playback.cycleAt(t));
     const phase = phaseAt(spec.phases, t);
     spec.update(t, cycle, phase);
     if (now - lastHud >= HUD_FRAME_INTERVAL || scrubbing) {
@@ -202,6 +223,7 @@ export function runSmPage(spec: SmPageSpec): void {
     controls.update();
     composer.render();
     labelRenderer.render(scene, camera);
+    clearStepText();
   }
   frame(performance.now());
 }

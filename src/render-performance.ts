@@ -1,9 +1,8 @@
 /**
- * The visualizations are animation-limited rather than resolution-limited.
- * Rendering at native Retina density almost doubles both dimensions on a
- * MacBook, while the extra pixels are barely visible in these geometric scenes.
+ * Render at native Retina density: at 1× the lane rows, cell edges and
+ * silkscreen text blur visibly. Capped at 2 so 3× displays don't pay for it.
  */
-export const MAX_PIXEL_RATIO = 1;
+export const MAX_PIXEL_RATIO = 2;
 
 /** Cap ProMotion/VRR displays at 60 fps instead of doing the scene work at 120 Hz. */
 export const MIN_FRAME_INTERVAL = 1000 / 60 - 1;

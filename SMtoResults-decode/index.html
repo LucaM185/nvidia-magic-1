@@ -45,13 +45,12 @@
           <p class="eyebrow">Cycle timeline · 8 warps</p>
           <div class="chips" aria-hidden="true">
             <span class="issue"><i></i>issue</span>
-            <span class="wait"><i></i>waiting on shared memory</span>
+            <span class="wait"><i></i>waiting on L2 or shared memory</span>
             <span class="compute"><i></i>FFMA</span>
-            <span class="hold"><i></i>sums in registers</span>
-            <span class="result"><i></i>shuffle</span>
+            <span class="result"><i></i>shuffle + FADD</span>
             <span class="store"><i></i>store</span>
           </div>
-          <span class="tl-summary">one K step per warp · each load feeds <b id="math-per-load">6 cycles</b> of FFMA</span>
+          <span class="tl-summary">a W chunk lands every <b id="chunk-interval">64 cycles</b> · each warp has <b id="math-per-load">6 cycles</b> of FFMA for it</span>
         </header>
         <div id="timeline"></div>
       </section>

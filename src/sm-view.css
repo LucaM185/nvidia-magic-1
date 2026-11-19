@@ -72,6 +72,10 @@ h2 { font-size: clamp(1.1rem, 1.6vw, 1.4rem); text-wrap: balance; }
 .tag.x { --tone: var(--x); } .tag.w { --tone: var(--w); } .tag.y { --tone: var(--y); }
 .tag.active { --tone: var(--active); } .tag.muted { --tone: var(--idle); }
 .tag.muted b { color: var(--muted); }
+/* A bare label printed on the hardware: the name in its data color, no box. */
+.tag.plain { padding: 3px 6px; border: 0; border-radius: 6px; background: rgba(7, 8, 11, .62); text-align: left; }
+.tag.plain b { color: var(--tone); font: 500 .76rem var(--mono); }
+.tag.plain span { color: var(--faint); font-size: .6rem; }
 .tag { transition: opacity 200ms ease; }
 .tag.aside { opacity: 0; }
 
@@ -91,7 +95,7 @@ h2 { font-size: clamp(1.1rem, 1.6vw, 1.4rem); text-wrap: balance; }
   transform: translateY(4px);
   transition: opacity 260ms ease, transform 260ms ease;
 }
-.callout::after { content: ""; position: absolute; left: 50%; bottom: -26px; width: 1px; height: 25px; background: linear-gradient(var(--tone, var(--active)), transparent); }
+.callout::after { content: ""; position: absolute; left: 50%; top: calc(100% + 1px); width: 1px; height: var(--lead-len, 25px); transform-origin: top; rotate: var(--lead-turn, 0rad); background: linear-gradient(var(--tone, var(--active)), transparent); }
 .callout.on { opacity: 1; transform: none; }
 .callout b { display: block; font: 500 .84rem Outfit, sans-serif; }
 .callout span { display: block; margin-top: 2px; color: var(--muted); }
@@ -128,12 +132,16 @@ h2 { font-size: clamp(1.1rem, 1.6vw, 1.4rem); text-wrap: balance; }
 }
 .tl-grid { position: absolute; top: 0; bottom: 16px; left: var(--track-left); right: 0; pointer-events: none; }
 .tl-grid i { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(255, 255, 255, .045); }
+/* Where a squeezed stretch of the axis ends: a dashed seam. */
+.tl-grid i.break { width: 0; border-left: 1px dashed rgba(255, 255, 255, .22); background: none; }
 .tl-divider { display: grid; grid-template-columns: calc(var(--track-left) - var(--gap)) 1fr; column-gap: var(--gap); align-items: center; height: 15px; color: var(--faint); font: .56rem var(--mono); letter-spacing: .14em; text-transform: uppercase; }
 .tl-divider::after { content: ""; height: 1px; background: rgba(255, 255, 255, .06); }
 .tl-divider + .tl-row { margin-top: 0; }
 .tl-row { position: relative; display: grid; grid-template-columns: var(--name) var(--state) 1fr; column-gap: var(--gap); align-items: center; height: var(--row-h); margin-top: 2px; }
 .tl-row::before { content: ""; position: absolute; top: -1px; bottom: -1px; left: -6px; width: calc(var(--track-left) - 2px); border-radius: 5px; background: color-mix(in srgb, var(--row) 9%, transparent); opacity: 0; transition: opacity 120ms ease; }
 .tl-row.active::before { opacity: 1; }
+.tl-row > * { transition: opacity 200ms ease; }
+.tl-row.dim > * { opacity: .32; }
 .tl-name { position: relative; display: flex; align-items: center; gap: 7px; color: var(--ink); font: 500 .66rem var(--mono); white-space: nowrap; }
 .tl-name i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--row); }
 .tl-row.hw .tl-name { color: var(--muted); font-weight: 400; }

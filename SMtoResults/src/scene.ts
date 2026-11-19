@@ -8,16 +8,19 @@ import {
   W,
   X,
   Y,
+  animateCopy,
   arc,
   callout,
   createSmHardware,
+  filled,
+  type CopyCell,
   showLabels,
   subpartitionOf,
   tag,
 } from "../../src/sm-scene";
-import { RESIDENT_CYCLE, WRITEBACK_DURATION, issuingWarp, smooth, staggered, through } from "../../src/sm-timing";
+import { L2_BYTES_PER_CYCLE, WRITEBACK_DURATION, issuingWarp, smooth, staggered, through } from "../../src/sm-timing";
 import type { PagePhase } from "../../src/sm-page";
-import { PLANS, WARP_COUNT, WRITEBACK_START } from "./timeline";
+import { PHASES, PLANS, TILE_BYTES, WARP_COUNT, WRITEBACK_START, cellLanded } from "./timeline";
 
 /** Shared memory holds A and B (one fragment per warp) and the C tiles on their way out. */
 const SHARED = { a: 0, b: 1, c: 2 };
@@ -43,8 +46,12 @@ export function createWorld() {
     tag(scene, "<b>Shared memory</b><span>A · B tiles · C on the way out</span>", new THREE.Vector3(at.sharedX, 0.05, at.front), "x"),
     tag(scene, "<b>Register file</b><span>one band per warp · A B | C</span>", new THREE.Vector3(at.registerX, 0.05, at.front), "active"),
     tag(scene, "<b>Tensor Cores</b><span>one per sub-partition · mma.sync</span>", new THREE.Vector3(at.tensorX, 0.05, at.front), "y", false, ["mma", "inflight"]),
+    tag(scene, "<b>TMA</b><span>copies from L2</span>", new THREE.Vector3(at.tmaX, 0.05, at.tmaZ + 0.7), "w", false, ["request", "latency", "land"]),
   ];
   const callouts = [
+    callout(scene, `<b>One bulk copy · ${(2 * TILE_BYTES) / 1024} KB</b><span>A and B tiles for this K step</span>`, new THREE.Vector3(at.tmaX, 0.7, at.tmaZ), "w", ["request"]),
+    callout(scene, "<b>~250 cycles</b><span>before the first byte is back from L2</span>", new THREE.Vector3(at.tmaX, 0.7, at.tmaZ), "x", ["latency"]),
+    callout(scene, `<b>${L2_BYTES_PER_CYCLE} B per cycle</b><span>A fills first, then B</span>`, new THREE.Vector3(at.sharedX, 0.6, at.sharedRowZ(SHARED.a, 0)), "w", ["land"]),
     callout(scene, "<b>W0 is ready</b><span>its token lights up</span>", new THREE.Vector3(at.registerX - 1.2, 0.55, at.schedulerZ), "active", ["selected"]),
     callout(scene, "<b>ldmatrix · back in 30 cycles</b><span>A and B fragments → W0's registers</span>", new THREE.Vector3(at.sharedX, 0.6, at.sharedRowZ(SHARED.a, 0)), "x", ["load"]),
     callout(scene, "<b>Scheduler moves on to W1</b><span>W0 is still waiting</span>", new THREE.Vector3(at.registerX - 0.4, 0.55, at.schedulerZ), "active", ["waiting"]),
@@ -62,17 +69,30 @@ export function createWorld() {
   const fromTensor = PLANS.map((_, warp) => arc(at.tensorTop(subpartitionOf(warp)), hw.accumulators.tops[warp * ACCUMULATORS + 3], 0.9));
   const writes = PLANS.map((_, warp) => arc(hw.accumulators.tops[warp * ACCUMULATORS], sharedC.tops[warp], 2.0));
 
-  function update(_t: number, cycle: number, phase: PagePhase): void {
+  // The TMA fills A cell by cell, then B.
+  const copyCells: CopyCell[] = [sharedA, sharedB].flatMap((cells, tile) =>
+    cells.tops.map((target, index) => ({
+      target,
+      color: tile === 0 ? X : W,
+      land: cellLanded(tile, index, cells.count),
+      span: TILE_BYTES / cells.count / L2_BYTES_PER_CYCLE,
+    })),
+  );
+  const copyCurves = copyCells.map((cell) => hw.inbound(cell.target));
+
+  function update(t: number, cycle: number, phase: PagePhase): void {
     showLabels(tags, callouts, phase.id);
     const c = cycle;
-    const visible = c >= RESIDENT_CYCLE ? 1 : 0;
+    const visible = t >= PHASES[1].t ? 1 : 0;
     const selected = issuingWarp(c, PLANS, WRITEBACK_START);
 
     for (let warp = 0; warp < WARP_COUNT; warp++) {
       const plan = PLANS[warp];
       const reading = c >= plan.load && c < plan.ready;
-      sharedA.set(warp, X, reading ? 0.8 : 0.38);
-      sharedB.set(warp, W, reading ? 0.8 : 0.38);
+      for (const [tile, cells, color] of [[0, sharedA, X], [1, sharedB, W]] as const) {
+        const fill = filled(c, copyCells[tile * WARP_COUNT + warp]);
+        cells.set(warp, fill > 0 ? color : IDLE, fill <= 0 ? 0.12 : reading ? 0.8 : 0.38, 0.15 + fill * 0.85);
+      }
       const written = through(c, staggered(WRITEBACK_START, warp), staggered(WRITEBACK_START, warp) + WRITEBACK_DURATION);
       sharedC.set(warp, written > 0 ? Y : IDLE, written > 0 ? 0.3 + written * 0.5 : 0.12, 0.15 + written * 0.85);
 
@@ -83,10 +103,10 @@ export function createWorld() {
         regA.set(warp * PER_OPERAND + i, loaded > 0 ? X : IDLE, operand);
         regB.set(warp * PER_OPERAND + i, loaded > 0 ? W : IDLE, operand);
       }
-      const filled = through(c, plan.execStart, plan.execEnd);
+      const accumulated = through(c, plan.execStart, plan.execEnd);
       const writing = written > 0 && written < 1;
       for (let i = 0; i < ACCUMULATORS; i++) {
-        hw.accumulators.set(warp * ACCUMULATORS + i, filled > 0 ? Y : IDLE, writing ? 0.6 : 0.1 + filled * 0.4, 0.12 + filled * 0.88);
+        hw.accumulators.set(warp * ACCUMULATORS + i, accumulated > 0 ? Y : IDLE, writing ? 0.6 : 0.1 + accumulated * 0.4, 0.12 + accumulated * 0.88);
       }
       hw.tokens[warp].emissiveIntensity = warp === selected ? 0.8 : visible * 0.2;
       hw.tokenMeshes[warp].scale.setScalar(Math.max(0.001, visible));
@@ -112,6 +132,7 @@ export function createWorld() {
     // Beads: operands in, the MMA out to the Tensor Core and back, C out to shared memory.
     const beads = hw.beads;
     beads.begin();
+    animateCopy(hw, c, copyCells, copyCurves);
     for (let warp = 0; warp < WARP_COUNT; warp++) {
       const plan = PLANS[warp];
       const color = WARP_COLORS[warp];
